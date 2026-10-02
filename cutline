@@ -1,34 +1,69 @@
 #!/usr/bin/env python3
-"""Cutline: a small Omarchy-styled multi-track video cutter.
+"""Cutline: a small multi-track video editor that runs in a browser app window.
 
     cutline [video]
+    cutline --version
 
 With a video, starts a new project with it. Without, opens the start screen
-(recent projects and the videos in ~/Videos). Videos are never modified:
-projects live in ~/.local/share/cutline/projects and "Export" renders an MP4
-next to the project's first video.
+(recent projects and the videos in your Videos folder). Videos are never
+modified: projects live in ~/.local/share/cutline/projects and "Export" renders
+an MP4 next to the project's first video.
+
+Environment:
+    CUTLINE_BROWSER     browser command to open the editor window with
+    CUTLINE_VIDEOS      folder listed on the start screen (default: XDG Videos)
+    CUTLINE_NO_BROWSER  set to only start the server and print its URL
 """
 
+import functools
 import hashlib
 import json
 import math
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import threading
 import time
-import tomllib
+import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+try:
+    import tomllib
+except ImportError:
+    sys.exit("cutline: Python 3.11 or newer is required")
+
+VERSION = "0.1.0"
 HERE = Path(__file__).resolve().parent
+
+
+def xdg_dir(var, fallback):
+    value = os.environ.get(var, "")
+    return Path(value) if os.path.isabs(value) else Path.home() / fallback
+
+
+def videos_dir():
+    """$CUTLINE_VIDEOS, else the XDG Videos folder, else ~/Videos."""
+    if os.environ.get("CUTLINE_VIDEOS"):
+        return Path(os.environ["CUTLINE_VIDEOS"]).expanduser()
+    try:
+        out = subprocess.run(["xdg-user-dir", "VIDEOS"], capture_output=True, text=True, timeout=3).stdout.strip()
+        if out and Path(out) != Path.home():             # xdg-user-dir answers $HOME when it's unset
+            return Path(out)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return Path.home() / "Videos"
+
+
+# Omarchy writes the current theme here; elsewhere the built-in Tokyo Night colours are used.
 THEME = Path.home() / ".local/state/omarchy/current/theme/colors.toml"
-PROJECTS = Path.home() / ".local/share/cutline/projects"
-CACHE = Path.home() / ".cache/cutline"
-VIDEOS = Path.home() / "Videos"
+PROJECTS = xdg_dir("XDG_DATA_HOME", ".local/share") / "cutline/projects"
+CACHE = xdg_dir("XDG_CACHE_HOME", ".cache") / "cutline"
+VIDEOS = videos_dir()
 VIDEO_EXT = {".mp4", ".mov", ".mkv", ".webm", ".m4v"}
 THUMB_H = 72
 SPRITE_COLS = 20         # thumbnails are stored as a grid: one giant strip is too wide for the GPU
@@ -41,6 +76,28 @@ CORNER_MARGIN = 0.03     # picture-in-picture margin, as a share of the canvas w
 TONEMAP = ("libplacebo=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv:"
            "tonemapping=bt.2390:format=yuv420p")
 SDR_TAGS = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:range=tv"
+# The same on the CPU, for an ffmpeg without libplacebo or a machine without Vulkan.
+TONEMAP_CPU = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
+               "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+BROWSERS = ("chromium", "google-chrome-stable", "google-chrome", "brave", "brave-browser",
+            "vivaldi-stable", "vivaldi", "microsoft-edge-stable", "thorium-browser", "helium-browser")
+
+
+@functools.cache
+def tonemap():
+    """The best HDR→SDR filter this ffmpeg can actually run, tried once on a tiny HLG clip."""
+    test = ("color=c=gray:s=64x64:d=0.1,format=yuv420p10le,"
+            "setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc")
+    for vf in (TONEMAP, TONEMAP_CPU):
+        try:
+            if subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", test, "-vf", vf, "-f", "null", "-"],
+                              capture_output=True, timeout=30).returncode == 0:
+                return vf
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    print("cutline: no working HDR tone mapping (libplacebo or zscale); HDR videos will look washed out",
+          file=sys.stderr)
+    return f"format=yuv420p,{SDR_TAGS}"
 
 
 def probe(path):
@@ -147,7 +204,7 @@ class Source:
                "-vf", f"scale=-2:{PROXY_H},format=yuv420p", "-c:v", "libx264",
                "-preset", "ultrafast", "-crf", "26", "-threads", "4", *tail]
         hdr = ["ffmpeg", "-v", "error", "-y", "-i", str(self.path),
-               "-vf", f"{TONEMAP},scale=-2:{PROXY_H}", "-c:v", "libx264",
+               "-vf", f"{tonemap()},scale=-2:{PROXY_H}", "-c:v", "libx264",
                "-preset", "ultrafast", "-crf", "26", "-threads", "4", *tail]
         for cmd in ((hdr, cpu) if self.info.get("hdr") else (gpu, cpu)):
             proc = subprocess.Popen(["nice", "-n", "10", *cmd], stdout=subprocess.PIPE,
@@ -163,6 +220,8 @@ class Source:
             self.proxy_progress = 0.0
 
     # Keyframes only (-skip_frame nokey): a long recording is skimmed in seconds.
+    # A short clip may have a single keyframe, which leaves nothing to tile: then
+    # decode every frame instead.
     def make_sprite(self):
         if self.sprite.exists():
             return
@@ -170,11 +229,14 @@ class Source:
         fps = self.thumbs / self.info["duration"]
         rows = math.ceil(self.thumbs / self.cols)
         vf = f"fps={fps:.6f},scale={self.thumb_w}:{THUMB_H},tile={self.cols}x{rows}"
-        subprocess.run(["nice", "-n", "10", "ffmpeg", "-v", "error", "-y",
-                        "-skip_frame", "nokey", "-i", str(self.path), "-an",
-                        "-vf", vf, "-frames:v", "1", "-q:v", "5", str(tmp)])
-        if tmp.exists():
-            tmp.rename(self.sprite)
+        for skip in (["-skip_frame", "nokey"], []):
+            subprocess.run(["nice", "-n", "10", "ffmpeg", "-v", "error", "-y", *skip, "-i", str(self.path),
+                            "-an", "-vf", vf, "-frames:v", "1", "-q:v", "5", str(tmp)],
+                           stderr=subprocess.DEVNULL)
+            if tmp.exists() and tmp.stat().st_size:
+                tmp.rename(self.sprite)
+                return
+            tmp.unlink(missing_ok=True)
 
     # Peak level per 50 ms: enough to see the pauses between sentences.
     def make_peaks(self):
@@ -303,8 +365,8 @@ class App:
             except ValueError as e:
                 self.export = {"state": "error", "progress": 0, "output": "", "error": str(e)}
                 return
-            self.export = {"state": "running", "progress": 0.0, "output": str(out), "error": ""}
-        threading.Thread(target=self.run_export, args=(args, total, out), daemon=True).start()
+            self.export = job = {"state": "running", "progress": 0.0, "output": str(out), "error": ""}
+        threading.Thread(target=self.run_export, args=(job, args, total, out), daemon=True).start()
 
     def build_export(self, project, scale1080):
         W, H = project["canvas"]["w"] // 2 * 2, project["canvas"]["h"] // 2 * 2
@@ -348,7 +410,7 @@ class App:
             full = c.get("layout", "full") == "full"
             size = float(c.get("size", 0.3))
             bw, bh = (W, H) if full else (max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2))
-            color = TONEMAP if self.sources[c["src"]].info.get("hdr") else f"format=yuv420p,{SDR_TAGS}"
+            color = tonemap() if self.sources[c["src"]].info.get("hdr") else f"format=yuv420p,{SDR_TAGS}"
             f = (f"[{k}:v:0]fps={FPS},{color},scale={bw}:{bh}:force_original_aspect_ratio=decrease,"
                  f"scale=trunc(iw/2)*2:trunc(ih/2)*2")
             if pad_full and full:
@@ -429,7 +491,9 @@ class App:
             n += 1
         return path
 
-    def run_export(self, args, total, out):
+    # Each run only ever updates its own job: a cancelled run that is still winding down
+    # must not touch the export started after it.
+    def run_export(self, job, args, total, out):
         proc = subprocess.Popen(["nice", "-n", "5", *args], stdout=subprocess.PIPE,
                                 stderr=subprocess.PIPE, text=True)
         self.export_proc = proc
@@ -439,22 +503,36 @@ class App:
         for line in proc.stdout:
             m = re.match(r"out_time_us=(\d+)", line)
             if m and total:
-                self.export["progress"] = min(0.999, int(m.group(1)) / 1e6 / total)
+                job["progress"] = min(0.999, int(m.group(1)) / 1e6 / total)
         code = proc.wait()
         reader.join(timeout=2)
-        self.export_proc = None
-        if code == 0:
-            self.export.update(state="done", progress=1.0)
-        elif self.export["state"] != "cancelled":
+        if self.export_proc is proc:
+            self.export_proc = None
+        if code == 0 and job["state"] != "cancelled":
+            job.update(state="done", progress=1.0)
+        elif job["state"] != "cancelled":
             out.unlink(missing_ok=True)
-            self.export.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
+            job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
 
     def cancel_export(self):
         proc = self.export_proc
         if proc:
             self.export["state"] = "cancelled"
             proc.terminate()
+            try:                                   # let it go before deleting its file, so the next
+                proc.wait(timeout=10)              # export can't pick the same name while it's still open
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
             Path(self.export["output"]).unlink(missing_ok=True)
+
+
+def home_label(path):
+    """path with the home folder shown as ~, for the UI."""
+    try:
+        return "~/" + str(Path(path).relative_to(Path.home()))
+    except ValueError:
+        return str(path)
 
 
 def list_videos():
@@ -511,7 +589,19 @@ def handler_for(app: App):
             except (BrokenPipeError, ConnectionResetError):
                 pass
 
+        def trusted(self):
+            """Only our own page may talk to us: refuse other hosts (DNS rebinding) and,
+            for POSTs, requests that other web pages send to this port."""
+            port = self.server.server_address[1]
+            host = self.headers.get("Host", "")
+            if host not in (f"127.0.0.1:{port}", f"localhost:{port}"):
+                return False
+            origin = self.headers.get("Origin")
+            return self.command == "GET" or origin is None or origin == f"http://{host}"
+
         def do_GET(self):
+            if not self.trusted():
+                return self.send_json({"error": "forbidden"}, 403)
             p = self.path.split("?")[0]
             if p == "/api/beat":
                 app.last_beat = time.time()
@@ -520,12 +610,12 @@ def handler_for(app: App):
                 page = "index.html" if app.project_file else "pick.html"
                 return self.send_file(HERE / page, "text/html; charset=utf-8")
             if p == "/api/home":
-                return self.send_json({"videos": list_videos(), "projects": app.list_projects(),
-                                       "theme": theme()})
+                return self.send_json({"videos": list_videos(), "videosDir": home_label(VIDEOS),
+                                       "projects": app.list_projects(), "theme": theme()})
             if p == "/api/theme":
                 return self.send_json(theme())
             if p == "/api/videos":
-                return self.send_json({"videos": list_videos()})
+                return self.send_json({"videos": list_videos(), "videosDir": home_label(VIDEOS)})
             if p == "/api/export":
                 return self.send_json(app.export)
             if m := re.match(r"/(media|sprite|peaks|api/source)/([0-9a-f]{12})", p):
@@ -554,6 +644,8 @@ def handler_for(app: App):
             self.send_json({"error": "not found"}, 404)
 
         def do_POST(self):
+            if not self.trusted():
+                return self.send_json({"error": "forbidden"}, 403)
             n = int(self.headers.get("Content-Length") or 0)
             try:
                 body = json.loads(self.rfile.read(n) or b"null") or {}
@@ -619,7 +711,45 @@ def free_port():
         return sock.getsockname()[1]
 
 
+def default_browser():
+    """The desktop's default browser, if it is Chromium-based (only those have --app windows)."""
+    try:
+        desktop = subprocess.run(["xdg-settings", "get", "default-web-browser"], capture_output=True,
+                                 text=True, timeout=3).stdout.strip()
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    dirs = [xdg_dir("XDG_DATA_HOME", ".local/share"),
+            *map(Path, (os.environ.get("XDG_DATA_DIRS") or "/usr/local/share:/usr/share").split(":"))]
+    for d in dirs:
+        entry = d / "applications" / desktop
+        if desktop.endswith(".desktop") and entry.is_file():
+            exe = next((shlex.split(line[5:])[0] for line in entry.read_text(errors="ignore").splitlines()
+                        if line.startswith("Exec=") and line[5:].strip()), "")
+            chromium = any(k in Path(exe).name for k in ("chrom", "brave", "vivaldi", "edge", "thorium", "helium"))
+            return exe if chromium and shutil.which(exe) else None
+    return None
+
+
+def open_window(url):
+    """Open the editor as a chromeless app window; without a Chromium-based browser, as a normal tab."""
+    if cmd := os.environ.get("CUTLINE_BROWSER"):
+        argv = shlex.split(cmd)
+    else:
+        found = default_browser() or next((b for b in BROWSERS if shutil.which(b)), None)
+        argv = [found] if found else None
+    if argv and shutil.which(argv[0]):
+        subprocess.Popen([*argv, f"--app={url}", "--new-window"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return
+    print("cutline: no Chromium-based browser found (set CUTLINE_BROWSER); "
+          "opening your default browser instead", file=sys.stderr)
+    webbrowser.open(url)
+
+
 def main():
+    if len(sys.argv) == 2 and sys.argv[1] in ("-V", "--version"):
+        print(f"cutline {VERSION}")
+        sys.exit(0)
     if len(sys.argv) > 2 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
         print(__doc__.strip())
         sys.exit(0 if len(sys.argv) == 2 else 2)
@@ -635,10 +765,8 @@ def main():
     server = ThreadingHTTPServer(("127.0.0.1", port), handler_for(app))
     threading.Thread(target=server.serve_forever, daemon=True).start()
     url = f"http://127.0.0.1:{port}/"
-    browser = shutil.which("chromium") or shutil.which("google-chrome-stable")
-    if browser and not os.environ.get("CUTLINE_NO_BROWSER"):
-        subprocess.Popen([browser, f"--app={url}", "--new-window"],
-                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not os.environ.get("CUTLINE_NO_BROWSER"):
+        open_window(url)
     print(f"cutline: {url}", flush=True)
     try:
         while time.time() - app.last_beat < IDLE_EXIT or app.busy():

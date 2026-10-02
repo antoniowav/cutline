@@ -657,15 +657,15 @@ window.addEventListener("keydown", e => {
 });
 
 // ---------- adding videos ----------
-let pickItems = [], pickActive = 0;
+let pickItems = [], pickActive = 0, pickDir = "~/Videos";
 async function openPicker() {
   const d = await (await fetch("/api/videos")).json();
-  pickItems = d.videos; pickActive = 0; renderPicker();
+  pickItems = d.videos; pickDir = d.videosDir || pickDir; pickActive = 0; renderPicker();
   $("picker").style.display = "flex";
 }
 function renderPicker() {
   const ul = $("pickList"); ul.innerHTML = "";
-  if (!pickItems.length) { ul.innerHTML = `<li class="muted">No videos found in ~/Videos</li>`; return; }
+  if (!pickItems.length) { ul.innerHTML = `<li class="muted"></li>`; ul.firstChild.textContent = `No videos found in ${pickDir}`; return; }
   pickItems.forEach((v, i) => {
     const li = document.createElement("li"); if (i === pickActive) li.className = "active";
     li.innerHTML = `<span class="n"></span><span class="muted"></span>`;

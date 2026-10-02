@@ -27,7 +27,7 @@
   <p>Open a project, or click a video to start a new one · <b>↑/↓</b> + <b>Enter</b></p>
   <h2>Projects</h2>
   <ul id="projects"></ul>
-  <h2>Videos in ~/Videos</h2>
+  <h2 id="videosHead">Videos</h2>
   <ul id="videos"></ul>
 </main>
 <script>
@@ -48,7 +48,9 @@ function render(d) {
     del.onclick = async e => { e.stopPropagation(); if (confirm(`Delete project "${p.name}"? Your videos are not touched.`)) { await post("/api/deleteproject", { file: p.file }, false); load(); } };
     li.appendChild(del); pu.appendChild(li);
   }
-  if (!d.videos.length) vu.innerHTML = `<li class="empty">No videos in ~/Videos yet.</li>`;
+  const vdir = d.videosDir || "~/Videos";
+  document.getElementById("videosHead").textContent = `Videos in ${vdir}`;
+  if (!d.videos.length) { vu.innerHTML = `<li class="empty"></li>`; vu.firstChild.textContent = `No videos in ${vdir} yet. You can also run: cutline /path/to/video`; }
   for (const v of d.videos) vu.appendChild(row(v.name, `${v.modified} · ${mb(v.size)}`, () => post("/api/new", { path: v.path })));
   highlight();
 }
