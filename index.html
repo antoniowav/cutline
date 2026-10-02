@@ -1,0 +1,809 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cutline</title>
+<style>
+  :root { --bg:#1a1b26; --bg2:#16161e; --bg3:#24283b; --fg:#c0caf5; --muted:#565f89;
+          --accent:#7aa2f7; --sel:#33467c; --red:#f7768e; --font:monospace; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+               font-family:var(--font), monospace; font-size:13px; overflow:hidden; }
+  body { display:flex; flex-direction:column; }
+  header, #inspector { display:flex; align-items:center; gap:12px; padding:7px 12px; background:var(--bg2);
+           border-bottom:1px solid var(--bg3); white-space:nowrap; }
+  #inspector { border-top:1px solid var(--bg3); min-height:38px; }
+  .name { font-weight:700; overflow:hidden; text-overflow:ellipsis; max-width:30vw; cursor:text;
+          border-bottom:1px dashed transparent; }
+  .name:hover { border-bottom-color:var(--muted); }
+  #nameEdit { font:inherit; font-weight:700; color:var(--fg); background:var(--bg3); border:1px solid var(--accent);
+              padding:2px 6px; width:28vw; display:none; }
+  .time { color:var(--accent); font-variant-numeric:tabular-nums; }
+  .spacer { flex:1; }
+  .muted { color:var(--muted); }
+  button, select { font:inherit; color:var(--fg); background:var(--bg3); border:1px solid var(--muted);
+                   padding:3px 10px; cursor:pointer; }
+  button:hover, select:hover { border-color:var(--accent); }
+  button.primary { border-color:var(--accent); color:var(--accent); }
+  button:disabled, select:disabled, input:disabled { opacity:.4; cursor:default; }
+  input[type=range] { accent-color:var(--accent); width:140px; }
+  #stage { flex:1; min-height:0; position:relative; background:var(--bg2); display:flex;
+           align-items:center; justify-content:center; overflow:hidden; }
+  #box { position:relative; background:#000; overflow:hidden; }
+  #box video { position:absolute; display:none; object-fit:contain; }
+  #timelineWrap { flex:none; position:relative; border-top:1px solid var(--bg3); }
+  canvas { display:block; width:100%; height:100%; }
+  footer { padding:4px 12px; background:var(--bg2); border-top:1px solid var(--bg3); color:var(--muted);
+           white-space:nowrap; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
+  footer b { color:var(--fg); font-weight:400; }
+  #progress { width:140px; height:6px; background:var(--bg3); display:none; }
+  #progress div { height:100%; width:0; background:var(--accent); }
+  #toast { position:fixed; left:50%; top:56px; transform:translateX(-50%); background:var(--bg2);
+           border:1px solid var(--accent); padding:8px 14px; display:none; z-index:20; max-width:80vw;
+           white-space:pre-wrap; }
+  #picker { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:10;
+            align-items:center; justify-content:center; }
+  #picker .panel { background:var(--bg); border:1px solid var(--accent); width:min(760px, 92vw);
+                   max-height:80vh; display:flex; flex-direction:column; }
+  #picker .head { padding:12px 14px; border-bottom:1px solid var(--bg3); display:flex; gap:10px; align-items:center; }
+  #picker ul { list-style:none; margin:0; padding:0; overflow:auto; }
+  #picker li { padding:9px 14px; border-bottom:1px solid var(--bg3); cursor:pointer; display:flex; gap:12px; }
+  #picker li:hover, #picker li.active { background:var(--bg3); }
+  #picker li .n { flex:1; overflow:hidden; text-overflow:ellipsis; }
+</style>
+</head>
+<body>
+<header>
+  <button id="homeBtn" title="Back to projects (everything is saved)">← Projects</button>
+  <span class="name" id="name" title="Click to rename the project">Cutline</span>
+  <input id="nameEdit" spellcheck="false">
+  <span class="time" id="time">00:00.00 / 00:00.00</span>
+  <span class="muted" id="canvasInfo"></span>
+  <span class="spacer"></span>
+  <span class="muted" id="status"></span>
+  <div id="progress"><div></div></div>
+  <button id="addBtn" title="Add another video (A)">＋ Video</button>
+  <button id="trackBtn" title="Add a track on top">＋ Track</button>
+  <select id="quality" title="Export size"><option value="orig">Original size</option><option value="1080">1080p</option></select>
+  <button class="primary" id="exportBtn">Export</button>
+</header>
+<div id="stage"><div id="box"></div></div>
+<div id="inspector">
+  <span class="muted" id="selInfo">Click a clip to select it</span>
+  <span class="spacer"></span>
+  <label class="muted">Layout
+    <select id="layout" disabled>
+      <option value="full">Full screen</option><option value="tl">Top left</option>
+      <option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option>
+    </select></label>
+  <label class="muted">Size <input id="size" type="range" min="10" max="70" step="1" value="30" disabled> <span id="sizeVal">30%</span></label>
+  <label class="muted" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
+</div>
+<div id="timelineWrap"><canvas id="tl"></canvas></div>
+<footer>
+  <b>Space</b> play · <b>S</b> split · <b>Del</b> remove (<b>Shift</b> keeps gap) · <b>Q</b>/<b>W</b> trim to playhead ·
+  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · click a <b>gap</b> + Del to close it · <b>A</b> add video · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
+  pinch / <b>Ctrl</b>+scroll zooms · <b>0</b> fit · <b>Ctrl+Z</b> undo
+</footer>
+<div id="picker"><div class="panel">
+  <div class="head"><b>Add a video</b><span class="spacer"></span>
+    <label class="muted">Put it
+      <select id="placeMode">
+        <option value="append">at the end of V1</option>
+        <option value="overlay">on a track above, at the playhead</option>
+      </select></label>
+    <button id="pickClose">Close</button></div>
+  <ul id="pickList"></ul>
+</div></div>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const canvas = $("tl"), ctx = canvas.getContext("2d"), box = $("box");
+const RULER = 24, HEAD = 112, PAD = 12, THUMB = 44, WAVE = 24, ROW = THUMB + WAVE + 10;
+
+let P = null;                     // project: name, canvas, sources, tracks, clips
+const S = {};                     // source id -> info (+ sprite image, peaks)
+let selected = new Set(), undo = [], redo = [];
+let gap = null;                   // a selected empty space: { track, start, end }
+let t = 0, playing = false, clock = { t0: 0, p0: 0 }, pps = 20, scrollX = 0, dirty = true;
+let colors = {}, vids = {};
+
+// ---------- helpers ----------
+const fmt = x => { x = Math.max(0, x); const m = Math.floor(x / 60); return `${String(m).padStart(2, "0")}:${(x - m * 60).toFixed(2).padStart(5, "0")}`; };
+const len = c => c.out - c.in;
+const end = c => c.start + len(c);
+const total = () => P.clips.reduce((a, c) => Math.max(a, end(c)), 0);
+const frame = () => 1 / (P?.canvas.fps || 30);
+const trackIdx = id => P.tracks.findIndex(tr => tr.id === id);
+const track = id => P.tracks.find(tr => tr.id === id);
+const nextId = () => P.clips.reduce((a, c) => Math.max(a, c.id), 0) + 1;
+const clipAt = (trackId, at) => P.clips.find(c => c.track === trackId && at >= c.start - 1e-6 && at < end(c) - 1e-6);
+function toast(msg, ms = 2600) { const el = $("toast"); el.textContent = msg; el.style.display = "block";
+  clearTimeout(toast.h); toast.h = setTimeout(() => el.style.display = "none", ms); }
+function draw() { dirty = true; }
+function showPrep() {
+  const busy = Object.values(S).filter(s => !s.proxyReady);
+  if (!busy.length) { if ($("status").textContent.startsWith("Preparing")) $("status").textContent = ""; return; }
+  const pct = Math.round(100 * busy.reduce((a, s) => a + (s.proxyProgress || 0), 0) / busy.length);
+  if (!$("status").textContent.startsWith("Export")) $("status").textContent = `Preparing smooth preview… ${pct}%`;
+}
+
+// ---------- history & saving ----------
+const snap = () => JSON.stringify({ tracks: P.tracks, clips: P.clips, sources: P.sources });
+function change(fn) {
+  undo.push(snap()); if (undo.length > 300) undo.shift(); redo = [];
+  fn(); after();
+}
+function restore(from, to) {
+  if (!from.length) return toast("Nothing to undo");
+  to.push(snap()); Object.assign(P, JSON.parse(from.pop())); selected.clear(); after();
+}
+function after() { buildVideos(); t = Math.min(t, total()); sync(true); save(); showInspector(); draw(); }
+let saveTimer;
+function save(now) {
+  clearTimeout(saveTimer);
+  const go = () => fetch("/api/project", { method: "POST", body: JSON.stringify(P) });
+  if (now) return go();
+  saveTimer = setTimeout(go, 500);
+}
+
+// ---------- preview: one <video> per track, stacked in track order ----------
+// Audio goes through a Web Audio gain per track, because <video>.volume stops at 100%.
+let actx = null; const gains = {};
+function wire(id) {
+  if (!actx || gains[id]) return;
+  const g = actx.createGain(); actx.createMediaElementSource(vids[id]).connect(g).connect(actx.destination); gains[id] = g;
+}
+function ensureAudio() {
+  if (!actx) { actx = new AudioContext(); for (const id of Object.keys(vids)) wire(id); }
+  if (actx.state === "suspended") actx.resume();
+}
+function applyGains() {
+  for (const tr of P.tracks) {
+    const g = gains[tr.id]; if (!g) continue;
+    const c = clipAt(tr.id, t);
+    g.gain.value = tr.muted || !c ? 0 : vol(c);
+  }
+}
+function buildVideos() {
+  for (const tr of P.tracks) if (!vids[tr.id]) {
+    const v = document.createElement("video"); v.preload = "auto"; v.playsInline = true;
+    v.addEventListener("seeked", () => { if (v._pending != null) { const w = v._pending; v._pending = null; v.currentTime = w; } });
+    vids[tr.id] = v; box.appendChild(v); wire(tr.id);
+  }
+  for (const id of Object.keys(vids)) if (!track(+id)) { vids[id].remove(); delete vids[id]; }
+  P.tracks.forEach((tr, i) => vids[tr.id].style.zIndex = i + 1);
+}
+function fitBox() {
+  const st = $("stage"), W = P.canvas.w, H = P.canvas.h;
+  const s = Math.min((st.clientWidth - 16) / W, (st.clientHeight - 16) / H);
+  box.style.width = `${Math.floor(W * s)}px`; box.style.height = `${Math.floor(H * s)}px`;
+}
+function place(v, c) {
+  const bw = box.clientWidth, bh = box.clientHeight;
+  const key = `${bw}x${bh}:${c.layout}:${c.size}`;
+  if (v._place === key) return;                     // style writes are costly; only when something changed
+  v._place = key;
+  if (!c.layout || c.layout === "full") { Object.assign(v.style, { left: "0px", top: "0px", width: `${bw}px`, height: `${bh}px` }); return; }
+  const w = bw * c.size, h = bh * c.size, m = bw * 0.03;
+  const x = c.layout.endsWith("l") ? m : bw - w - m, y = c.layout.startsWith("t") ? m : bh - h - m;
+  Object.assign(v.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+}
+// While a seek is running, only remember the latest target: scrubbing no longer queues up seeks.
+function seekTo(v, want) {
+  if (v.seeking) { v._pending = want; return; }
+  v.currentTime = want;
+}
+function sync(force) {
+  applyGains();
+  for (const tr of P.tracks) {
+    const v = vids[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
+    if (!c || !S[c.src]) { if (!v.paused) v.pause(); v.style.display = "none"; continue; }
+    const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
+    if (v.dataset.media !== media) { v.src = `/media/${c.src}?${media}`; v.dataset.media = media; v._pending = null; force = true; }
+    const want = c.in + (t - c.start);
+    v.muted = actx ? false : tr.muted; v.style.display = "block"; place(v, c);
+    if (playing) {
+      if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
+      else if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
+    } else {
+      if (!v.paused) v.pause();
+      if (force || Math.abs(v.currentTime - want) > 0.03) seekTo(v, want);
+    }
+  }
+}
+function play() {
+  if (!P.clips.length) return;
+  if (t >= total() - frame()) t = 0;
+  ensureAudio();
+  playing = true; clock = { t0: t, p0: performance.now() }; sync(true);
+}
+function pause() { playing = false; for (const v of Object.values(vids)) v.pause(); sync(true); }
+function seek(x) { t = Math.min(Math.max(0, x), total()); if (playing) clock = { t0: t, p0: performance.now() }; sync(true); draw(); }
+function tick() {
+  if (playing) {
+    t = clock.t0 + (performance.now() - clock.p0) / 1000;
+    if (t >= total()) { t = total(); pause(); }
+    sync(false); follow(); dirty = true;
+  }
+  if (dirty) { dirty = false; render(); }
+  requestAnimationFrame(tick);
+}
+function follow() {
+  const x = X(t), w = canvas.clientWidth;
+  if (x > w * 0.88 || x < HEAD) scrollX = Math.max(0, t * pps - (w - HEAD) * 0.25);
+}
+
+// ---------- editing ----------
+function split() {
+  let targets = P.clips.filter(c => selected.has(c.id) && t > c.start && t < end(c));
+  if (!targets.length) targets = P.clips.filter(c => !track(c.track).hidden && t > c.start && t < end(c));
+  targets = targets.filter(c => t - c.start >= frame() && end(c) - t >= frame());
+  if (!targets.length) return toast("Move the playhead over a clip to split it");
+  change(() => {
+    let id = nextId(); const fresh = [];
+    for (const c of targets) {
+      const cut = c.in + (t - c.start);
+      const right = { ...c, id: id++, start: t, in: cut };
+      c.out = cut; P.clips.push(right); fresh.push(right.id);
+    }
+    selected = new Set(fresh);
+  });
+}
+function gapAt(trackId, at) {
+  const same = P.clips.filter(c => c.track === trackId);
+  if (same.some(c => at >= c.start && at < end(c))) return null;
+  const before = same.filter(c => end(c) <= at + 1e-6), after = same.filter(c => c.start >= at - 1e-6);
+  if (!after.length) return null;                          // empty space after the last clip: not a gap
+  const start = before.length ? Math.max(...before.map(end)) : 0, stop = Math.min(...after.map(c => c.start));
+  return stop - start > 1e-3 ? { track: trackId, start, end: stop } : null;
+}
+function closeGap() {
+  const g = gap; gap = null;
+  change(() => { shiftAfter(g.track, g.end, g.end - g.start); t = g.start; });
+}
+function shiftAfter(trackId, from, by, except = new Set()) {
+  for (const c of P.clips) if (c.track === trackId && !except.has(c.id) && c.start >= from - 1e-6) c.start = Math.max(0, c.start - by);
+}
+function remove(ripple) {
+  if (!selected.size) return toast("Click a clip to select it first");
+  const gone = P.clips.filter(c => selected.has(c.id)).sort((a, b) => b.start - a.start);
+  change(() => {
+    P.clips = P.clips.filter(c => !selected.has(c.id));
+    if (ripple) for (const c of gone) shiftAfter(c.track, end(c), len(c));
+    t = Math.min(...gone.map(c => c.start)); selected.clear();
+  });
+}
+function target() {
+  return P.clips.find(c => selected.has(c.id) && t >= c.start && t < end(c))
+      || P.tracks.map(tr => clipAt(tr.id, t)).find(Boolean);
+}
+function trim(side) {
+  const c = target(); if (!c) return toast("Move the playhead over a clip");
+  const at = t - c.start;
+  if (side === "start" && at >= frame()) change(() => {
+    c.in += at; shiftAfter(c.track, end(c) + at, at, new Set([c.id])); t = c.start;
+  });
+  if (side === "end" && len(c) - at >= frame()) change(() => {
+    const cut = len(c) - at, oldEnd = end(c); c.out = c.in + at; shiftAfter(c.track, oldEnd, cut, new Set([c.id]));
+  });
+}
+function freeStart(trackId, start, d, ignore) {   // first spot >= start where [s, s+d) is free
+  let s = Math.max(0, start), moved = true;
+  while (moved) {
+    moved = false;
+    for (const c of P.clips) if (c.track === trackId && c.id !== ignore && s < end(c) - 1e-6 && s + d > c.start + 1e-6) { s = end(c); moved = true; }
+  }
+  return s;
+}
+function addTrack() {
+  change(() => { const id = P.tracks.reduce((a, tr) => Math.max(a, tr.id), 0) + 1;
+    P.tracks.push({ id, name: `V${P.tracks.length + 1}`, hidden: false, muted: false }); });
+  resizeTimeline();
+}
+
+// ---------- inspector ----------
+const vol = c => c.volume ?? 1;
+function showInspector() {
+  const one = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null;
+  const first = P.clips.find(c => selected.has(c.id));
+  $("vol").disabled = !first;
+  if (first) { $("vol").value = Math.round(vol(first) * 100); $("volVal").textContent = `${$("vol").value}%`; }
+  $("layout").disabled = !one; $("size").disabled = !one || one.layout === "full";
+  if (!one) { $("selInfo").textContent = gap ? `Gap of ${fmt(gap.end - gap.start)} selected — Delete closes it`
+      : selected.size ? `${selected.size} clips selected` : "Click a clip to select it"; return; }
+  $("selInfo").textContent = `${S[one.src]?.name || "offline"} · ${track(one.track).name} · ${fmt(len(one))}`;
+  $("layout").value = one.layout || "full";
+  $("size").value = Math.round((one.size || 0.3) * 100); $("sizeVal").textContent = `${$("size").value}%`;
+}
+$("layout").onchange = () => { const c = P.clips.find(c => selected.has(c.id)); if (c) change(() => { c.layout = $("layout").value; }); };
+// Sliders change things live; the state from before the drag becomes one undo step.
+let sliderBefore = null;
+function sliderStart() { if (sliderBefore === null) sliderBefore = snap(); }
+function sliderEnd() { if (sliderBefore !== null && sliderBefore !== snap()) { undo.push(sliderBefore); redo = []; save(); } sliderBefore = null; }
+$("size").oninput = () => { const c = P.clips.find(c => selected.has(c.id)); if (!c) return; sliderStart();
+  c.size = $("size").value / 100; $("sizeVal").textContent = `${$("size").value}%`; sync(true); draw(); };
+$("size").onchange = sliderEnd;
+$("vol").oninput = () => { sliderStart();
+  for (const c of P.clips) if (selected.has(c.id)) c.volume = $("vol").value / 100;
+  $("volVal").textContent = `${$("vol").value}%`; applyGains(); draw(); };
+$("vol").onchange = sliderEnd;
+$("vol").ondblclick = () => { $("vol").value = 100; $("vol").oninput(); sliderEnd(); };
+
+// ---------- view ----------
+const X = x => HEAD + PAD + x * pps - scrollX;
+const T = x => (x - HEAD - PAD + scrollX) / pps;
+let scrollY = 0;
+const rowY = idx => RULER + (P.tracks.length - 1 - idx) * ROW + 4 - scrollY;     // top track drawn first
+function clampScrollY() { scrollY = Math.min(Math.max(0, scrollY), Math.max(0, RULER + P.tracks.length * ROW + 12 - canvas.clientHeight)); }
+function fit() { pps = Math.max(0.2, (canvas.clientWidth - HEAD - PAD * 2) / Math.max(1, total())); scrollX = 0; draw(); }
+function zoomAt(f, x) { const at = T(x); pps = Math.min(400, Math.max(0.2, pps * f)); scrollX = Math.max(0, at * pps - (x - HEAD - PAD)); draw(); }
+function clampScroll() { scrollX = Math.min(Math.max(0, scrollX), Math.max(0, (total() + 5) * pps + PAD * 2 - (canvas.clientWidth - HEAD))); }
+function resizeTimeline() {
+  $("timelineWrap").style.height = `${Math.min(RULER + P.tracks.length * ROW + 12, Math.round(innerHeight * 0.5))}px`;
+  fitBox(); sync(true); draw();
+}
+
+// ---------- drawing ----------
+function render() {
+  const dpr = devicePixelRatio || 1, W = canvas.clientWidth, H = canvas.clientHeight;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) { canvas.width = W * dpr; canvas.height = H * dpr; }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0); clampScroll(); clampScrollY();
+  ctx.fillStyle = colors.dark_background; ctx.fillRect(0, 0, W, H);
+  ctx.font = `11px ${colors.font}`;
+
+  // track lanes
+  P.tracks.forEach((tr, i) => {
+    const y = rowY(i);
+    ctx.fillStyle = i % 2 ? colors.dark_background : colors.background; ctx.globalAlpha = 0.5;
+    ctx.fillRect(HEAD, y - 4, W - HEAD, ROW); ctx.globalAlpha = 1;
+  });
+  // clips
+  ctx.save(); ctx.beginPath(); ctx.rect(HEAD, RULER, W - HEAD, H - RULER); ctx.clip();
+  for (const c of P.clips) {
+    if (drag.active && drag.ids.has(c.id)) continue;
+    drawClip(c, X(c.start), rowY(trackIdx(c.track)), 1);
+  }
+  if (drag.active) for (const g of drag.ghosts) {
+    ctx.fillStyle = colors.accent; ctx.globalAlpha = 0.35;
+    ctx.fillRect(X(g.start), rowY(trackIdx(g.track)) - 3, len(g) * pps, THUMB + WAVE + 6); ctx.globalAlpha = 1;
+    drawClip(g, X(g.start), rowY(trackIdx(g.track)), 0.85);
+  }
+  ctx.restore(); ctx.save(); ctx.beginPath(); ctx.rect(HEAD, 0, W - HEAD, H); ctx.clip();
+  // ruler
+  ctx.fillStyle = colors.background; ctx.fillRect(HEAD, 0, W, RULER);
+  const step = [0.1, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1200].find(s => s * pps >= 80) || 1800;
+  ctx.fillStyle = colors.muted; ctx.strokeStyle = colors.muted;
+  for (let s = Math.max(0, Math.floor(T(HEAD) / step) * step); X(s) < W; s += step) {
+    const x = Math.round(X(s)) + 0.5; if (x < HEAD) continue;
+    ctx.beginPath(); ctx.moveTo(x, RULER - 7); ctx.lineTo(x, RULER); ctx.stroke();
+    ctx.fillText(step < 1 ? fmt(s) : fmt(s).slice(0, 5), x + 3, 14);
+  }
+  if (gap && track(gap.track)) {
+    const gx = X(gap.start), gw = (gap.end - gap.start) * pps, gy = rowY(trackIdx(gap.track));
+    ctx.fillStyle = colors.accent; ctx.globalAlpha = 0.18; ctx.fillRect(gx, gy, gw, THUMB + WAVE); ctx.globalAlpha = 1;
+    ctx.strokeStyle = colors.accent; ctx.lineWidth = 2; ctx.setLineDash([6, 4]);
+    ctx.strokeRect(gx + 1, gy + 1, Math.max(1, gw - 2), THUMB + WAVE - 2); ctx.setLineDash([]); ctx.lineWidth = 1;
+    if (gw > 70) { ctx.fillStyle = colors.accent; ctx.font = `11px ${colors.font}`;
+      ctx.fillText(`gap ${fmt(gap.end - gap.start)} · Del closes`, gx + 6, gy + (THUMB + WAVE) / 2 + 4); }
+  }
+  if (drag.box?.on) {
+    const b = drag.box, bx = Math.min(b.x0, b.x), by = Math.max(RULER, Math.min(b.y0, b.y));
+    ctx.fillStyle = colors.accent; ctx.globalAlpha = 0.12;
+    ctx.fillRect(bx, by, Math.abs(b.x - b.x0), Math.abs(b.y - b.y0)); ctx.globalAlpha = 1;
+    ctx.strokeStyle = colors.accent; ctx.setLineDash([4, 3]);
+    ctx.strokeRect(bx + 0.5, by + 0.5, Math.abs(b.x - b.x0), Math.abs(b.y - b.y0)); ctx.setLineDash([]);
+  }
+  // snap line + playhead
+  if (drag.snap != null) { ctx.strokeStyle = colors.yellow || colors.accent; ctx.setLineDash([4, 4]);
+    const sx = Math.round(X(drag.snap)) + 0.5; ctx.beginPath(); ctx.moveTo(sx, RULER); ctx.lineTo(sx, H); ctx.stroke(); ctx.setLineDash([]); }
+  const px = Math.round(X(t)) + 0.5;
+  ctx.strokeStyle = colors.red; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px, 0); ctx.lineTo(px, H); ctx.stroke(); ctx.lineWidth = 1;
+  ctx.fillStyle = colors.red; ctx.beginPath(); ctx.moveTo(px - 6, 0); ctx.lineTo(px + 6, 0); ctx.lineTo(px, 8); ctx.fill();
+  ctx.restore();
+
+  // track headers
+  ctx.fillStyle = colors.background; ctx.fillRect(0, 0, HEAD, H);
+  ctx.strokeStyle = colors.lighter_background; ctx.beginPath(); ctx.moveTo(HEAD - 0.5, 0); ctx.lineTo(HEAD - 0.5, H); ctx.stroke();
+  P.tracks.forEach((tr, i) => {
+    const y = rowY(i);
+    ctx.font = `bold 13px ${colors.font}`; ctx.fillStyle = tr.hidden ? colors.muted : colors.foreground;
+    ctx.fillText(tr.name, 12, y + 14);
+    ctx.font = `11px ${colors.font}`;
+    button(12, y + 24, tr.hidden ? "hidden" : "visible", !tr.hidden);
+    button(12, y + 44, tr.muted ? "muted" : "sound", !tr.muted);
+    if (removable(tr)) { ctx.fillStyle = colors.muted; ctx.font = `13px ${colors.font}`; ctx.fillText("×", HEAD - 22, y + 14); }
+  });
+  // top-left corner: add-track button (drawn last so lanes scroll under it)
+  ctx.fillStyle = colors.background; ctx.fillRect(0, 0, HEAD, RULER);
+  ctx.font = `11px ${colors.font}`; button(12, 4, "+ track", true);
+}
+function removable(tr) { return P.tracks.length > 1 && !P.clips.some(c => c.track === tr.id); }
+function button(x, y, label, on) {
+  ctx.strokeStyle = on ? colors.accent : colors.muted; ctx.strokeRect(x + 0.5, y + 0.5, 72, 16);
+  ctx.fillStyle = on ? colors.accent : colors.muted; ctx.fillText(label, x + 6, y + 12);
+}
+function drawClip(c, x0, y0, alpha) {
+  const w = len(c) * pps, W = canvas.clientWidth, src = S[c.src], h = THUMB + WAVE;
+  if (x0 > W || x0 + w < HEAD) return;
+  const hidden = track(c.track)?.hidden;
+  ctx.save(); ctx.globalAlpha = alpha * (hidden ? 0.35 : 1);
+  ctx.beginPath(); ctx.rect(x0, y0, Math.max(1, w), h); ctx.clip();
+  ctx.fillStyle = src ? colors.lighter_background : colors.red; ctx.fillRect(x0, y0, w, h);
+  if (src?.sprite) {
+    const tw = src.thumbW * THUMB / src.thumbH;
+    for (let x = x0 + Math.max(0, Math.floor((HEAD - x0) / tw)) * tw; x < Math.min(x0 + w, W); x += tw) {
+      const at = c.in + (x - x0) / pps;
+      const idx = Math.min(src.thumbs - 1, Math.max(0, Math.floor(at / src.duration * src.thumbs)));
+      const cols = src.spriteCols || src.thumbs;
+      ctx.drawImage(src.sprite, (idx % cols) * src.thumbW, Math.floor(idx / cols) * src.thumbH, src.thumbW, src.thumbH, x, y0, tw, THUMB);
+    }
+  }
+  ctx.fillStyle = colors.background; ctx.fillRect(x0, y0 + THUMB, w, WAVE);
+  if (src?.peaks) {
+    const pk = src.peaks, mid = y0 + THUMB + WAVE / 2;
+    ctx.fillStyle = track(c.track)?.muted ? colors.muted : colors.accent;
+    for (let x = Math.floor(Math.max(x0, HEAD)); x < Math.min(x0 + w, W); x++) {
+      const a = c.in + (x - x0) / pps, i0 = Math.floor(a / pk.step), i1 = Math.max(i0 + 1, Math.ceil((a + 1 / pps) / pk.step));
+      let m = 0; for (let i = i0; i < i1 && i < pk.peaks.length; i++) m = Math.max(m, pk.peaks[i]);
+      const hh = Math.max(1, Math.min(1, m * vol(c)) * (WAVE - 4)); ctx.fillRect(x, mid - hh / 2, 1, hh);
+    }
+  }
+  const label = (src ? src.name : "offline") + (c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
+              + (vol(c) !== 1 ? ` · vol ${Math.round(vol(c) * 100)}%` : "");
+  ctx.font = `11px ${colors.font}`; const lw = ctx.measureText(label).width + 8;
+  ctx.globalAlpha = alpha * 0.75; ctx.fillStyle = colors.dark_background; ctx.fillRect(x0 + 2, y0 + 2, Math.min(lw, w - 4), 15);
+  ctx.globalAlpha = alpha; ctx.fillStyle = colors.foreground; ctx.fillText(label, x0 + 6, y0 + 13);
+  ctx.restore();
+  const sel = selected.has(c.id);
+  ctx.strokeStyle = sel ? colors.accent : colors.muted; ctx.lineWidth = sel ? 3 : 1;
+  ctx.strokeRect(x0 + 0.5, y0 + 0.5, Math.max(1, w - 1), h - 1); ctx.lineWidth = 1;
+  if (sel) {
+    ctx.fillStyle = colors.accent; ctx.globalAlpha = 0.14; ctx.fillRect(x0, y0, w, h); ctx.globalAlpha = 1;
+    if (w > EDGE * 3) { ctx.fillRect(x0, y0 + h / 2 - 12, 4, 24); ctx.fillRect(x0 + w - 4, y0 + h / 2 - 12, 4, 24); }
+  }
+}
+
+// ---------- mouse & trackpad ----------
+const drag = { down: false, active: false, scrub: false, ids: new Set(), x0: 0, y0: 0, ghosts: [], snap: null, primary: null,
+               trim: null, trimClip: null, before: null, box: null };
+const EDGE = 7;                                             // px from a clip edge that grabs the trim handle
+function edgeAt(c, x) {
+  if (len(c) * pps < EDGE * 3) return null;                 // too small: just move it
+  if (Math.abs(x - X(end(c))) <= EDGE) return "end";
+  if (Math.abs(x - X(c.start)) <= EDGE) return "start";
+  return null;
+}
+function neighbours(c) {
+  const same = P.clips.filter(o => o.track === c.track && o.id !== c.id);
+  const prevEnd = Math.max(0, ...same.filter(o => end(o) <= c.start + 1e-6).map(end));
+  const nextStart = Math.min(Infinity, ...same.filter(o => o.start >= end(c) - 1e-6).map(o => o.start));
+  return { prevEnd, nextStart };
+}
+function snapTime(at, ignoreId) {
+  let best = 8 / pps, out = at; drag.snap = null;
+  for (const s of snapPoints(new Set([ignoreId]))) if (Math.abs(s - at) < best) { best = Math.abs(s - at); out = s; drag.snap = s; }
+  return out;
+}
+function hit(x, y) {
+  if (y < RULER || x < HEAD) return null;
+  const i = P.tracks.findIndex((tr, i) => y >= rowY(i) - 4 && y < rowY(i) - 4 + ROW);
+  if (i < 0) return { trackIdx: -1 };
+  const at = T(x), id = P.tracks[i].id;
+  const c = P.clips.find(c => c.track === id && at >= c.start && at < end(c))
+         || P.clips.find(c => c.track === id && edgeAt(c, x));
+  return { trackIdx: i, clip: c };
+}
+function rowAt(y) {
+  let best = 0, bd = 1e9;
+  P.tracks.forEach((tr, i) => { const d = Math.abs(y - (rowY(i) + (THUMB + WAVE) / 2)); if (d < bd) { bd = d; best = i; } });
+  return best;
+}
+canvas.addEventListener("mousedown", e => {
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (x < HEAD) {                                           // track header buttons
+    if (y < RULER) { if (x >= 12 && x <= 84) addTrack(); return; }
+    P.tracks.forEach((tr, i) => {
+      const yy = rowY(i);
+      if (removable(tr) && x >= HEAD - 28 && y >= yy && y <= yy + 18) {
+        change(() => { P.tracks = P.tracks.filter(o => o.id !== tr.id); }); resizeTimeline(); return;
+      }
+      if (x >= 12 && x <= 84 && y >= yy + 24 && y <= yy + 40) change(() => { tr.hidden = !tr.hidden; });
+      if (x >= 12 && x <= 84 && y >= yy + 44 && y <= yy + 60) change(() => { tr.muted = !tr.muted; });
+    });
+    return;
+  }
+  const h = hit(x, y);
+  drag.down = true; drag.x0 = x; drag.y0 = y;   // (also used by trimming)
+  if (!h || !h.clip) {
+    if (!e.shiftKey) selected.clear();
+    pause(); seek(T(x)); showInspector();
+    gap = null;
+    if (y < RULER) drag.scrub = true;
+    else {
+      drag.box = { x0: x, y0: y, x, y, base: new Set(selected), on: false };
+      if (h && h.trackIdx >= 0 && !e.shiftKey) gap = gapAt(P.tracks[h.trackIdx].id, T(x));
+    }
+    showInspector(); draw(); return;
+  }
+  gap = null;
+  const c = h.clip, edge = !e.shiftKey && edgeAt(c, x);
+  if (edge) {
+    selected = new Set([c.id]); drag.trim = edge; drag.trimClip = c; drag.before = snap();
+    pause(); showInspector(); draw(); return;
+  }
+  if (e.shiftKey) selected.has(c.id) ? selected.delete(c.id) : selected.add(c.id);
+  else if (!selected.has(c.id)) selected = new Set([c.id]);
+  drag.primary = c; drag.ids = new Set(selected);
+  pause(); seek(T(x)); showInspector(); draw();
+});
+function snapPoints(ignore) {
+  const pts = [0, t];
+  for (const c of P.clips) if (!ignore.has(c.id)) pts.push(c.start, end(c));
+  return pts;
+}
+canvas.addEventListener("mousemove", e => {
+  if (drag.down) return;
+  const r = canvas.getBoundingClientRect(), h = hit(e.clientX - r.left, e.clientY - r.top);
+  canvas.style.cursor = h?.clip && edgeAt(h.clip, e.clientX - r.left) ? "ew-resize" : "default";
+});
+window.addEventListener("mousemove", e => {
+  if (!drag.down) return;
+  const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+  if (drag.trim) {
+    const c = drag.trimClip, { prevEnd, nextStart } = neighbours(c), src = S[c.src];
+    const at = snapTime(T(x), c.id);
+    if (drag.trim === "end") {
+      const maxEnd = Math.min(nextStart, c.start + ((src?.duration ?? c.out) - c.in));
+      const newEnd = Math.min(Math.max(at, c.start + frame()), maxEnd);
+      c.out = c.in + (newEnd - c.start); t = newEnd - 1e-3;
+    } else {
+      const minStart = Math.max(prevEnd, c.start - c.in);
+      const newStart = Math.min(Math.max(at, minStart), end(c) - frame());
+      c.in += newStart - c.start; c.start = newStart; t = newStart;
+    }
+    if (x > canvas.clientWidth - 30) scrollX += 10;
+    if (x < HEAD + 30) scrollX -= 10;
+    sync(true); showInspector(); draw(); return;
+  }
+  if (drag.scrub) { seek(T(x)); return; }
+  if (drag.box) {
+    const b = drag.box; b.x = x; b.y = y;
+    if (!b.on && Math.hypot(x - b.x0, y - b.y0) > 5) { b.on = true; gap = null; }
+    if (!b.on) return;
+    const t0 = T(Math.min(b.x0, x)), t1 = T(Math.max(b.x0, x));
+    const y0 = Math.min(b.y0, y), y1 = Math.max(b.y0, y);
+    selected = new Set(b.base);
+    for (const c of P.clips) {
+      const ry = rowY(trackIdx(c.track));
+      if (end(c) > t0 && c.start < t1 && ry + THUMB + WAVE > y0 && ry < y1) selected.add(c.id);
+    }
+    if (x > canvas.clientWidth - 30) scrollX += 10;
+    if (x < HEAD + 30) scrollX -= 10;
+    showInspector(); draw(); return;
+  }
+  if (!drag.active && Math.hypot(x - drag.x0, y - drag.y0) > 6) drag.active = true;
+  if (!drag.active || !drag.primary) return;
+  let dt = (x - drag.x0) / pps;
+  const p = drag.primary, dRow = rowAt(y) - trackIdx(p.track);
+  drag.snap = null; let best = 8 / pps;
+  for (const s of snapPoints(drag.ids)) for (const edge of [p.start + dt, end(p) + dt]) {
+    if (Math.abs(s - edge) < best) { best = Math.abs(s - edge); dt += s - edge; drag.snap = s; }
+  }
+  const minStart = Math.min(...P.clips.filter(c => drag.ids.has(c.id)).map(c => c.start));
+  if (minStart + dt < 0) dt = -minStart;
+  drag.ghosts = P.clips.filter(c => drag.ids.has(c.id)).map(c => {
+    const ti = Math.min(P.tracks.length - 1, Math.max(0, trackIdx(c.track) + dRow));
+    return { ...c, start: c.start + dt, track: P.tracks[ti].id };
+  });
+  if (x > canvas.clientWidth - 30) scrollX += 10;
+  if (x < HEAD + 30) scrollX -= 10;
+  draw();
+});
+window.addEventListener("mouseup", () => {
+  if (drag.trim) {
+    if (drag.before !== snap()) { undo.push(drag.before); redo = []; after(); }
+  } else if (drag.active && drag.ghosts.length) {
+    const ghosts = drag.ghosts;
+    change(() => {
+      for (const g of ghosts.sort((a, b) => a.start - b.start)) {
+        const c = P.clips.find(c => c.id === g.id);
+        c.track = g.track; c.start = freeStart(g.track, g.start, len(c), c.id);
+      }
+    });
+  }
+  Object.assign(drag, { down: false, active: false, scrub: false, ids: new Set(), ghosts: [], snap: null, primary: null,
+                       trim: null, trimClip: null, before: null, box: null });
+  draw();
+});
+canvas.addEventListener("wheel", e => {
+  e.preventDefault();
+  const r = canvas.getBoundingClientRect();
+  const overHeads = e.clientX - r.left < HEAD;
+  if (e.ctrlKey || e.metaKey) zoomAt(Math.exp(-e.deltaY * 0.01), Math.max(HEAD, e.clientX - r.left));
+  else if (overHeads || e.altKey) { scrollY += e.deltaY; draw(); }        // over track names: scroll tracks
+  else { scrollX += Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY; draw(); }
+}, { passive: false });
+
+// ---------- keyboard ----------
+window.addEventListener("keydown", e => {
+  if ($("picker").style.display === "flex") { pickerKey(e); return; }
+  if (["SELECT", "INPUT"].includes(e.target.tagName) && e.key !== " ") return;
+  const k = e.key, ctrl = e.ctrlKey || e.metaKey;
+  if (k === " ") { e.preventDefault(); e.target.blur?.(); playing ? pause() : play(); }
+  else if (ctrl && k.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? restore(redo, undo) : restore(undo, redo); }
+  else if (ctrl && k.toLowerCase() === "y") { e.preventDefault(); restore(redo, undo); }
+  else if (ctrl && k.toLowerCase() === "s") { e.preventDefault(); save(true); toast("Saved"); }
+  else if (ctrl && k.toLowerCase() === "a") { e.preventDefault(); selected = new Set(P.clips.map(c => c.id)); showInspector(); }
+  else if (ctrl) return;
+  else if (k === "s" || k === "S") split();
+  else if (k === "Delete" || k === "Backspace") { e.preventDefault(); gap ? closeGap() : remove(!e.shiftKey); }
+  else if (k === "q") trim("start");
+  else if (k === "w") trim("end");
+  else if (k === "a") openPicker();
+  else if (k === "ArrowLeft" || k === "ArrowRight") {
+    e.preventDefault(); pause();
+    seek(t + (e.shiftKey ? 1 : e.altKey ? 5 : frame()) * (k === "ArrowLeft" ? -1 : 1)); follow();
+  }
+  else if (k === "Home") { pause(); seek(0); follow(); }
+  else if (k === "End") { pause(); seek(total()); follow(); }
+  else if (k === "+" || k === "=") zoomAt(1.4, (canvas.clientWidth + HEAD) / 2);
+  else if (k === "-") zoomAt(1 / 1.4, (canvas.clientWidth + HEAD) / 2);
+  else if (k === "0") fit();
+  else if (k === "Escape") { selected.clear(); gap = null; showInspector(); }
+  else return;
+  draw();
+});
+
+// ---------- adding videos ----------
+let pickItems = [], pickActive = 0;
+async function openPicker() {
+  const d = await (await fetch("/api/videos")).json();
+  pickItems = d.videos; pickActive = 0; renderPicker();
+  $("picker").style.display = "flex";
+}
+function renderPicker() {
+  const ul = $("pickList"); ul.innerHTML = "";
+  if (!pickItems.length) { ul.innerHTML = `<li class="muted">No videos found in ~/Videos</li>`; return; }
+  pickItems.forEach((v, i) => {
+    const li = document.createElement("li"); if (i === pickActive) li.className = "active";
+    li.innerHTML = `<span class="n"></span><span class="muted"></span>`;
+    li.children[0].textContent = v.name; li.children[1].textContent = v.modified;
+    li.onclick = () => addVideo(v.path); ul.appendChild(li);
+  });
+}
+function pickerKey(e) {
+  if (e.key === "Escape") closePicker();
+  else if (e.key === "ArrowDown") { pickActive = Math.min(pickItems.length - 1, pickActive + 1); renderPicker(); }
+  else if (e.key === "ArrowUp") { pickActive = Math.max(0, pickActive - 1); renderPicker(); }
+  else if (e.key === "Enter" && pickItems[pickActive]) addVideo(pickItems[pickActive].path);
+  else return;
+  e.preventDefault();
+}
+function closePicker() { $("picker").style.display = "none"; }
+async function addVideo(path) {
+  const r = await (await fetch("/api/addsource", { method: "POST", body: JSON.stringify({ path }) })).json();
+  if (r.error) return toast(r.error);
+  closePicker(); loadSource(r);
+  const mode = $("placeMode").value;
+  change(() => {
+    if (!P.sources.some(s => s.id === r.id)) P.sources.push({ id: r.id, path: r.path });
+    const c = { id: nextId(), src: r.id, in: 0, out: r.duration, layout: "full", size: 0.3 };
+    if (mode === "append") {
+      c.track = P.tracks[0].id;
+      c.start = P.clips.filter(x => x.track === c.track).reduce((a, x) => Math.max(a, end(x)), 0);
+    } else {
+      let tr = P.tracks.slice(1).find(tr => freeStart(tr.id, t, len(c)) - t < 1e-6);
+      if (!tr) { tr = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: `V${P.tracks.length + 1}`, hidden: false, muted: false }; P.tracks.push(tr); }
+      c.track = tr.id; c.start = t; c.layout = "br";
+    }
+    P.clips.push(c); selected = new Set([c.id]);
+  });
+  resizeTimeline(); toast(`Added ${r.name}`);
+}
+$("addBtn").onclick = openPicker;
+$("pickClose").onclick = closePicker;
+$("picker").onclick = e => { if (e.target.id === "picker") closePicker(); };
+$("trackBtn").onclick = addTrack;
+
+// ---------- export ----------
+let polling = null;
+$("exportBtn").onclick = async () => {
+  const cur = await (await fetch("/api/export")).json();
+  if (cur.state === "running") { if (confirm("Cancel the export?")) fetch("/api/export/cancel", { method: "POST" }); return; }
+  await save(true);
+  const r = await (await fetch("/api/export", { method: "POST",
+    body: JSON.stringify({ project: P, scale1080: $("quality").value === "1080" }) })).json();
+  if (r.state === "error") return toast(r.error, 6000);
+  watchExport();
+};
+function watchExport() {
+  clearInterval(polling); $("progress").style.display = "block"; $("exportBtn").textContent = "Cancel";
+  polling = setInterval(async () => {
+    const s = await (await fetch("/api/export")).json();
+    $("progress").firstElementChild.style.width = `${Math.round(s.progress * 100)}%`;
+    $("status").textContent = s.state === "running" ? `Exporting ${Math.round(s.progress * 100)}%` : "";
+    if (s.state === "running") return;
+    clearInterval(polling); $("progress").style.display = "none"; $("exportBtn").textContent = "Export";
+    if (s.state === "done") { $("status").textContent = "Exported ✓"; toast(`Saved ${s.output.split("/").pop()}`, 6000); fetch("/api/reveal", { method: "POST" }); }
+    else if (s.state === "error") toast(`Export failed:\n${s.error}`, 9000);
+  }, 500);
+}
+
+// ---------- startup ----------
+async function loadSource(info) {
+  S[info.id] = { ...S[info.id], ...info };
+  const s = S[info.id];
+  if (info.spriteReady && !s.sprite) { const img = new Image(); img.onload = () => { s.sprite = img; draw(); }; img.src = `/sprite/${info.id}?${Date.now()}`; }
+  if (info.peaksReady && info.audio && !s.peaks) { s.peaks = await (await fetch(`/peaks/${info.id}`)).json(); draw(); }
+  const wasReady = s.proxyWasReady; s.proxyWasReady = info.proxyReady;
+  if (info.proxyReady && !wasReady && P) sync(true);
+  if (!info.spriteReady || !info.peaksReady || !info.proxyReady)
+    setTimeout(async () => loadSource(await (await fetch(`/api/source/${info.id}`)).json()), 2000);
+  showPrep(); draw();
+}
+// ---------- rename ----------
+function editName() {
+  const inp = $("nameEdit"); inp.value = P.name; $("name").style.display = "none"; inp.style.display = "inline-block";
+  inp.focus(); inp.select();
+}
+function closeName() { $("nameEdit").style.display = "none"; $("name").style.display = ""; }
+async function commitName() {
+  const name = $("nameEdit").value.trim(); closeName();
+  if (!name || name === P.name) return;
+  clearTimeout(saveTimer); await save(true);
+  const r = await (await fetch("/api/rename", { method: "POST", body: JSON.stringify({ name }) })).json();
+  if (r.error) return toast(r.error);
+  P.name = r.name; $("name").textContent = r.name; document.title = `${r.name} — Cutline`;
+  toast(`Renamed to "${r.name}" — exports will be called "${r.name}-edit.mp4"`);
+}
+$("name").onclick = editName;
+$("nameEdit").addEventListener("keydown", e => {
+  e.stopPropagation();                                  // typing must not trigger editor shortcuts
+  if (e.key === "Enter") commitName(); else if (e.key === "Escape") closeName();
+});
+$("nameEdit").addEventListener("blur", () => { if ($("nameEdit").style.display !== "none") commitName(); });
+
+$("homeBtn").onclick = async () => {
+  await save(true);
+  const r = await (await fetch("/api/close", { method: "POST" })).json();
+  if (r.error) return toast(r.error); location.reload();
+};
+let themeKey = "";
+function applyTheme(th) {
+  const key = JSON.stringify(th); if (key === themeKey) return; themeKey = key;
+  colors = { ...th.colors, font: `"${th.font}"` };
+  colors.dark_background ||= colors.background; colors.lighter_background ||= colors.selection;
+  const root = document.documentElement.style;
+  for (const [k, v] of Object.entries({ "--bg": colors.background, "--bg2": colors.dark_background, "--bg3": colors.lighter_background,
+    "--fg": colors.foreground, "--muted": colors.muted, "--accent": colors.accent, "--sel": colors.selection, "--red": colors.red, "--font": colors.font }))
+    root.setProperty(k, v);
+  draw();
+}
+async function refreshTheme() { try { applyTheme(await (await fetch("/api/theme")).json()); } catch {} }
+setInterval(refreshTheme, 3000);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) { if (playing) pause(); return; }
+  fetch("/api/beat"); refreshTheme(); if (P) { fitBox(); sync(true); draw(); }
+});
+window.addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));
+async function init() {
+  const d = await (await fetch("/api/project")).json();
+  P = d.project; applyTheme(d.theme);
+  $("name").textContent = P.name; document.title = `${P.name} — Cutline`;
+  $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h} · ${Math.round(P.canvas.fps)} fps`;
+  for (const info of Object.values(d.sources)) loadSource(info);
+  const missing = P.sources.filter(s => !d.sources[s.id]);
+  if (missing.length) toast(`Missing video${missing.length > 1 ? "s" : ""}:\n${missing.map(s => s.path).join("\n")}`, 8000);
+  buildVideos(); resizeTimeline(); fit(); sync(true); showInspector();
+  requestAnimationFrame(tick);
+  setInterval(() => fetch("/api/beat"), 5000); fetch("/api/beat");
+  if (d.export.state === "running") watchExport();
+}
+window.addEventListener("resize", () => { resizeTimeline(); });
+setInterval(() => { if (P) $("time").textContent = `${fmt(t)} / ${fmt(total())}`; }, 100);
+init();
+</script>
+</body>
+</html>
