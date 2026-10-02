@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Cutline
+GenericName=Video Editor
+Comment=Multi-track video editor
+Exec=cutline %f
+Icon=cutline
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+Keywords=video;editor;cut;trim;timeline;ffmpeg;
+MimeType=video/mp4;video/quicktime;video/x-matroska;video/webm;video/x-m4v;

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Remove what ./install put in ~/.local (or $PREFIX). Projects, cache and videos are kept.
+set -euo pipefail
+
+PREFIX=${PREFIX:-$HOME/.local}
+
+rm -fv "$PREFIX/bin/cutline" \
+       "$PREFIX/share/applications/cutline.desktop" \
+       "$PREFIX/share/icons/hicolor/scalable/apps/cutline.svg"
+rm -rfv "$PREFIX/lib/cutline"
+command -v update-desktop-database >/dev/null && update-desktop-database -q "$PREFIX/share/applications" || true
+
+data=${XDG_DATA_HOME:-$HOME/.local/share}/cutline
+cache=${XDG_CACHE_HOME:-$HOME/.cache}/cutline
+echo
+echo "Uninstalled. Kept your projects in $data and previews in $cache."
+echo "To remove those too:  rm -rf \"$data\" \"$cache\""

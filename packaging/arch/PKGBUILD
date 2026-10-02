@@ -1,0 +1,34 @@
+# Maintainer: Antonio Piattelli <hello@antoniopiattelli.com>
+pkgname=cutline
+pkgver=0.1.0
+pkgrel=1
+pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)'
+arch=('any')
+url='https://github.com/antoniowav/cutline'
+license=('MIT')
+depends=('python>=3.11' 'ffmpeg')
+optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE_BROWSER)'
+            'vulkan-driver: GPU HDR tone mapping with libplacebo'
+            'libva-driver: GPU-made preview proxies (VA-API)'
+            'xdg-user-dirs: find your Videos folder'
+            'xdg-utils: show exports in the file manager, use your default browser')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')  # run updpkgsums once the v$pkgver tag is on GitHub
+
+check() {
+  cd "$pkgname-$pkgver"
+  python -c 'import ast, sys; ast.parse(open("cutline").read())'
+  [[ $(python cutline --version) == "cutline $pkgver" ]]
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 cutline "$pkgdir/usr/lib/$pkgname/cutline"
+  install -Dm644 index.html pick.html -t "$pkgdir/usr/lib/$pkgname/"
+  install -dm755 "$pkgdir/usr/bin"
+  ln -s "/usr/lib/$pkgname/cutline" "$pkgdir/usr/bin/cutline"
+  install -Dm644 assets/cutline.desktop "$pkgdir/usr/share/applications/cutline.desktop"
+  install -Dm644 assets/cutline.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/cutline.svg"
+  install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# Install Cutline from this checkout into ~/.local (or $PREFIX).
+#   ./install           copy the app into $PREFIX/lib/cutline
+#   ./install --link    link to this checkout instead, so edits here take effect at once
+set -euo pipefail
+src=$(dirname "$(readlink -f "$0")")
+cd "$src"
+
+PREFIX=${PREFIX:-$HOME/.local}
+link=false
+case ${1:-} in
+  --link) link=true ;;
+  "") ;;
+  *) echo "usage: ./install [--link]" >&2; exit 2 ;;
+esac
+
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null \
+  || { echo "install: Cutline needs Python 3.11 or newer" >&2; exit 1; }
+command -v ffmpeg >/dev/null || echo "warning: ffmpeg is not installed; Cutline needs it (Arch: sudo pacman -S ffmpeg)" >&2
+
+mkdir -p "$PREFIX/bin"
+if $link; then
+  target="$src/cutline"
+else
+  install -Dm755 cutline "$PREFIX/lib/cutline/cutline"
+  install -Dm644 index.html pick.html -t "$PREFIX/lib/cutline/"
+  target="$PREFIX/lib/cutline/cutline"
+fi
+ln -sfn "$target" "$PREFIX/bin/cutline"
+
+install -Dm644 assets/cutline.desktop "$PREFIX/share/applications/cutline.desktop"
+install -Dm644 assets/cutline.svg "$PREFIX/share/icons/hicolor/scalable/apps/cutline.svg"
+command -v update-desktop-database >/dev/null && update-desktop-database -q "$PREFIX/share/applications" || true
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+
+echo "Installed $PREFIX/bin/cutline -> $target"
+case ":$PATH:" in *":$PREFIX/bin:"*) ;; *) echo "Note: $PREFIX/bin is not on your PATH." ;; esac
+if ! command -v chromium google-chrome-stable google-chrome brave brave-browser vivaldi-stable >/dev/null 2>&1; then
+  echo "Tip: install a Chromium-based browser (e.g. chromium) for a proper app window."
+fi
