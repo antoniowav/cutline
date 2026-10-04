@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 6 * * 1"   # weekly, so new advisories surface even without new commits
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -yq --no-install-recommends ffmpeg
+      - run: python cutline --version
+      - name: End-to-end tests (server, security checks, real export)
+        run: python tests/test_server.py
+
+  security:
+    name: Security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0   # gitleaks scans the whole history
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install scanners
+        run: pip install --quiet ruff bandit
+      - name: ruff (bugs + flake8-bandit security rules)
+        run: ruff check .
+      - name: bandit
+        # B404/B603/B607: running ffmpeg & co by name, without a shell, is the design.
+        run: cp cutline /tmp/cutline.py && bandit -s B404,B603,B607 /tmp/cutline.py
+      - name: shellcheck
+        run: shellcheck -s bash -e SC2034,SC2154,SC2164 install uninstall packaging/arch/PKGBUILD
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+      - name: gitleaks (secrets in the code and its history)
+        run: go run github.com/zricethezav/gitleaks/v8@latest git . --redact --no-banner
+
+  package:
+    name: Arch package (makepkg + namcap)
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git namcap python ffmpeg
+      - uses: actions/checkout@v7
+      - name: Build the package from this commit
+        run: |
+          git config --global --add safe.directory "$PWD"
+          source packaging/arch/PKGBUILD
+          mkdir -p /tmp/build && cp packaging/arch/PKGBUILD /tmp/build/
+          git archive --prefix="$pkgname-$pkgver/" -o "/tmp/build/$pkgname-$pkgver.tar.gz" HEAD
+          useradd -m builder && chown -R builder /tmp/build
+          cd /tmp/build && sudo -u builder makepkg -f --noconfirm
+      - name: namcap
+        run: |
+          cd /tmp/build
+          namcap PKGBUILD ./*.pkg.tar.zst | tee namcap.txt
+          ! grep -E ' E: ' namcap.txt

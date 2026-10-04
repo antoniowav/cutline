@@ -1,5 +1,8 @@
 # Cutline
 
+[![CI](https://github.com/antoniowav/cutline/actions/workflows/ci.yml/badge.svg)](https://github.com/antoniowav/cutline/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/antoniowav/cutline/actions/workflows/codeql.yml/badge.svg)](https://github.com/antoniowav/cutline/actions/workflows/codeql.yml)
+
 **A fast, keyboard-friendly multi-track video editor for Linux: cut, trim and stack clips, then export a frame-exact MP4 with ffmpeg.**
 
 <!-- Screenshots: add the images to docs/screenshots/ and uncomment.
@@ -116,7 +119,7 @@ Start screen and *Add video* list: <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>E
 | --- | --- | --- |
 | `CUTLINE_BROWSER` | your default browser if it's Chromium-based, else the first one found | Browser command for the app window, e.g. `brave` or `flatpak run com.brave.Browser` |
 | `CUTLINE_VIDEOS` | XDG Videos folder (`xdg-user-dir VIDEOS`), else `~/Videos` | Folder listed on the start screen (searched 4 levels deep) |
-| `CUTLINE_NO_BROWSER` | unset | Only start the server and print its URL |
+| `CUTLINE_NO_BROWSER` | unset | Only start the server and print its URL (the URL works once) |
 
 ## Data locations
 
@@ -126,7 +129,12 @@ Start screen and *Add video* list: <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>E
 | Preview proxies, thumbnails, waveforms | `$XDG_CACHE_HOME/cutline`, by default `~/.cache/cutline`. Safe to delete; it is rebuilt when needed. |
 | Exports | Next to the project's first video |
 
-Cutline only listens on `127.0.0.1` and only answers its own window.
+### Security
+
+Cutline's server only listens on `127.0.0.1`, and only answers the window it opened. The window
+gets a one-time key in its start URL, which it exchanges for a session cookie. Other users on the
+same computer, and web pages in your browser, are refused. Project data is validated before it
+reaches ffmpeg, and exports can only be written next to the project's first video.
 
 ## Uninstall
 

@@ -1,0 +1,11 @@
+target-version = "py311"
+line-length = 120
+extend-include = ["cutline"]
+
+[lint]
+select = ["E9", "F", "B", "S"]
+# Running ffmpeg, ffprobe and the xdg tools by name, without a shell, is how Cutline works.
+ignore = ["S603", "S607", "S404"]
+
+[lint.per-file-ignores]
+"tests/*" = ["S310"]   # the tests talk to the local server over http://127.0.0.1

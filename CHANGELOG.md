@@ -27,5 +27,14 @@ First public release.
 - Cancelling an export and starting another right away could fail the new one and delete its file.
 - The local server now refuses requests from other web pages and other host names.
 
+### Security
+- The local server requires a session: the window swaps a one-time launch key for an HttpOnly, SameSite=Strict cookie.
+  Other users on the same computer could previously drive the API (read videos, delete projects, write exports).
+- Exports could be written outside the video's folder through a crafted project name (path traversal).
+- Project values are validated before they reach ffmpeg's filter graph.
+- Malformed requests (bad byte ranges, non-object JSON, oversized bodies) are rejected cleanly.
+- Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
+- CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
+
 [Unreleased]: https://github.com/antoniowav/cutline/compare/v0.1.0...HEAD
 [0.1.0]: https://github.com/antoniowav/cutline/releases/tag/v0.1.0

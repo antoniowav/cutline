@@ -8,6 +8,7 @@ Replace `X.Y.Z` with the new version.
 - [ ] `./cutline --version` prints `cutline X.Y.Z`.
 
 ## 2. Test
+- [ ] CI is green on `main` (tests, security scan, Arch package).
 - [ ] `./install --link`, launch from the app launcher, open an existing project.
 - [ ] New project from a video, split, ripple delete, add a second video as picture-in-picture.
 - [ ] Export at original size and at 1080p, and play the result (`mpv <file>`).
