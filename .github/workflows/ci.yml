@@ -65,7 +65,7 @@ jobs:
         shell: bash
     steps:
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed git namcap
+        run: pacman -Syu --noconfirm --needed git namcap && pacman -Fy   # file database: lets namcap map commands to packages
       - uses: actions/checkout@v7
       - name: Install the PKGBUILD's dependencies
         run: |
