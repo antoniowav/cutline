@@ -13,7 +13,7 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             'xdg-user-dirs: find your Videos folder'
             'xdg-utils: show exports in the file manager, use your default browser')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('SKIP')  # run updpkgsums once the v$pkgver tag is on GitHub
+sha256sums=('2d71d3fdef140433dff9d9f768dafe6cb91dbed0bdb13ed6a3595c2d71994a53')
 
 check() {
   cd "$pkgname-$pkgver"
