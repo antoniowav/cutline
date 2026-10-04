@@ -37,8 +37,6 @@ jobs:
         language: [python, javascript-typescript]
     steps:
       - uses: actions/checkout@v7
-      - name: Give the script a .py name so CodeQL picks it up
-        run: cp cutline cutline_main.py
       - uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}

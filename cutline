@@ -198,6 +198,16 @@ def clean_project(p):
         raise ValueError("This project can't be exported: its data is damaged") from e
 
 
+def project_path(file):
+    """The project file the page means, only ever looked up inside PROJECTS: just the
+    file name is taken from the request, and the result must still be inside it."""
+    root = os.path.realpath(PROJECTS)
+    path = os.path.realpath(os.path.join(root, os.path.basename(str(file))))
+    if not path.startswith(root + os.sep) or not path.endswith(".json"):
+        raise ValueError("Unknown project")
+    return Path(path)
+
+
 def source_id(path):
     return hashlib.sha1(str(path).encode(), usedforsecurity=False).hexdigest()[:12]   # an id, not security
 
@@ -351,8 +361,8 @@ class App:
         self.save(project)
 
     def open_project(self, file):
-        file = Path(file).expanduser().resolve()
-        if file.parent != PROJECTS.resolve() or not file.is_file():
+        file = project_path(file)
+        if not file.is_file():
             raise ValueError("Unknown project")
         project = json.loads(file.read_text())
         for s in project.get("sources", []):
@@ -364,8 +374,8 @@ class App:
 
     def rename(self, file, new_name):
         """Rename a project: its name inside and its file. Returns the new name."""
-        file = Path(file).expanduser().resolve()
-        if file.parent != PROJECTS.resolve() or not file.is_file():
+        file = project_path(file)
+        if not file.is_file():
             raise ValueError("Unknown project")
         name = safe_name(new_name)
         if not name:
@@ -774,8 +784,8 @@ def handler_for(app: App):
                         return self.send_json({"error": "Wait for the export to finish"}, 409)
                     return self.send_json({"ok": True, "name": app.rename(app.project_file, body.get("name", ""))})
                 if self.path == "/api/deleteproject":
-                    f = Path(body.get("file", "")).resolve()
-                    if f.parent == PROJECTS.resolve() and f.suffix == ".json" and f != app.project_file:
+                    f = project_path(body.get("file", ""))
+                    if not app.project_file or f != app.project_file.resolve():   # never the open one
                         f.unlink(missing_ok=True)
                     return self.send_json({"ok": True})
                 if not app.project_file:

@@ -78,7 +78,7 @@ jobs:
           mkdir -p /tmp/build && cp packaging/arch/PKGBUILD /tmp/build/
           git archive --prefix="$pkgname-$pkgver/" -o "/tmp/build/$pkgname-$pkgver.tar.gz" HEAD
           useradd -m builder && chown -R builder /tmp/build
-          cd /tmp/build && sudo -u builder makepkg -f --noconfirm
+          cd /tmp/build && sudo -u builder makepkg -f --noconfirm --skipchecksums   # this commit, not the release tarball
       - name: namcap
         run: |
           cd /tmp/build

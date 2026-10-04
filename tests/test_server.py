@@ -112,6 +112,11 @@ class CutlineServer(unittest.TestCase):
         self.assertEqual(self.call("/api/new", raw=b"[1]")[0], 400)
         self.assertEqual(self.call("/api/new", raw=b"{nope")[0], 400)
         self.assertEqual(self.call("/api/openproject", {"file": "/etc/passwd"})[0], 400)
+        outside = self.videos.parent / "outside.json"           # not in the projects folder
+        outside.write_text("{}")
+        for path in (outside, f"{self.videos.parent}/data/cutline/projects/../../../outside.json"):
+            self.call("/api/deleteproject", {"file": str(path)})
+            self.assertTrue(outside.exists(), f"deleted a file outside the projects folder via {path}")
 
     def test_3_lists_videos(self):
         home = self.json("/api/home")
