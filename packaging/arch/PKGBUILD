@@ -6,7 +6,7 @@ pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR 
 arch=('any')
 url='https://github.com/antoniowav/cutline'
 license=('MIT')
-depends=('python>=3.11' 'ffmpeg')
+depends=('python' 'ffmpeg' 'hicolor-icon-theme')  # cutline itself refuses Python < 3.11
 optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE_BROWSER)'
             'vulkan-driver: GPU HDR tone mapping with libplacebo'
             'libva-driver: GPU-made preview proxies (VA-API)'

@@ -30,8 +30,8 @@ ln -sfn "$target" "$PREFIX/bin/cutline"
 
 install -Dm644 assets/cutline.desktop "$PREFIX/share/applications/cutline.desktop"
 install -Dm644 assets/cutline.svg "$PREFIX/share/icons/hicolor/scalable/apps/cutline.svg"
-command -v update-desktop-database >/dev/null && update-desktop-database -q "$PREFIX/share/applications" || true
-command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true
+if command -v update-desktop-database >/dev/null; then update-desktop-database -q "$PREFIX/share/applications" || true; fi
+if command -v gtk-update-icon-cache >/dev/null; then gtk-update-icon-cache -qtf "$PREFIX/share/icons/hicolor" 2>/dev/null || true; fi
 
 echo "Installed $PREFIX/bin/cutline -> $target"
 case ":$PATH:" in *":$PREFIX/bin:"*) ;; *) echo "Note: $PREFIX/bin is not on your PATH." ;; esac
