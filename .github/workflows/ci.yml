@@ -65,8 +65,12 @@ jobs:
         shell: bash
     steps:
       - name: Install tools
-        run: pacman -Syu --noconfirm --needed git namcap python ffmpeg
+        run: pacman -Syu --noconfirm --needed git namcap
       - uses: actions/checkout@v7
+      - name: Install the PKGBUILD's dependencies
+        run: |
+          source packaging/arch/PKGBUILD
+          pacman -S --noconfirm --needed "${depends[@]}" "${makedepends[@]}"
       - name: Build the package from this commit
         run: |
           git config --global --add safe.directory "$PWD"
