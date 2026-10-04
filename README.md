@@ -32,13 +32,7 @@ original files.
 
 ## Install
 
-### Arch Linux (AUR)
-
-```sh
-yay -S cutline        # or: paru -S cutline
-```
-
-### From a git clone (any Linux)
+Works on any Linux (see [Requirements](#requirements)).
 
 ```sh
 git clone https://github.com/antoniowav/cutline.git
@@ -138,10 +132,7 @@ reaches ffmpeg, and exports can only be written next to the project's first vide
 
 ## Uninstall
 
-- AUR / pacman: `sudo pacman -R cutline`
-- Git-clone install: `./uninstall` from the checkout
-
-Both leave your projects and cache in place. To remove them too:
+Run `./uninstall` from the checkout. It leaves your projects and cache in place. To remove them too:
 
 ```sh
 rm -rf ~/.local/share/cutline ~/.cache/cutline
