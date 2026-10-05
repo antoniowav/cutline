@@ -54,8 +54,18 @@ class CutlineServer(unittest.TestCase):
                "-vf", "format=yuv420p10le,setparams=color_primaries=bt2020:color_trc=arib-std-b67:colorspace=bt2020nc",
                "-c:v", "ffv1", "-c:a", "flac", str(cls.videos / "hdr.mkv"))
 
+        # A Cuore desktop: its theme file and its font command.
+        home = tmp / "home"
+        theme = home / ".local/state/cuore/current/theme"
+        theme.mkdir(parents=True)
+        (theme / "colors.toml").write_text('background = "#123456"\naccent = "#abcdef"\n')
+        bin_dir = tmp / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "cuore").write_text("#!/bin/sh\necho 'Test Mono'\n")
+        (bin_dir / "cuore").chmod(0o755)
         env = {**os.environ, "XDG_DATA_HOME": str(tmp / "data"), "XDG_CACHE_HOME": str(tmp / "cache"),
-               "CUTLINE_VIDEOS": str(cls.videos), "CUTLINE_NO_BROWSER": "1", "PYTHONDONTWRITEBYTECODE": "1"}
+               "CUTLINE_VIDEOS": str(cls.videos), "CUTLINE_NO_BROWSER": "1", "PYTHONDONTWRITEBYTECODE": "1",
+               "HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
         cls.server = subprocess.Popen([sys.executable, str(ROOT / "cutline")], env=env,
                                       stdout=subprocess.PIPE, text=True)
         cls.launch = re.search(r"http://\S+", cls.server.stdout.readline()).group(0)
@@ -96,6 +106,13 @@ class CutlineServer(unittest.TestCase):
         return state
 
     # ---- tests ----
+
+    def test_0_follows_the_cuore_theme_and_font(self):
+        theme = self.json("/api/theme")
+        self.assertEqual(theme["colors"]["background"], "#123456")
+        self.assertEqual(theme["colors"]["accent"], "#abcdef")
+        self.assertEqual(theme["colors"]["green"], "#9ece6a")     # the rest stay Tokyo Night
+        self.assertEqual(theme["font"], "Test Mono")
 
     def test_1_refuses_anyone_but_its_window(self):
         self.assertEqual(self.call("/api/home", stranger=True)[0], 403)
