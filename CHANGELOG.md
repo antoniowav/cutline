@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-05
+
 ### Added
 - Cuore's theme colours and font, as well as Omarchy's.
 
@@ -39,5 +41,6 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/antoniowav/cutline/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/antoniowav/cutline/releases/tag/v0.1.0
