@@ -252,6 +252,34 @@ class CutlineServer(unittest.TestCase):
         mean = float(re.search(r"mean_volume: (-?[\d.]+) dB", level).group(1))
         self.assertGreater(mean, -30, "the music is in the mix")
 
+    def test_9c_text_on_top(self):
+        ffmpeg("-f", "lavfi", "-i", f"color=c=gray:s=640x360:r={FPS}:d=2",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(self.videos / "gray.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "gray.mp4")})
+        d = self.json("/api/project")
+        project = d["project"]
+        project["clips"].append(   # quotes, colons, % and brackets must reach the picture as typed
+            {"id": 2, "kind": "text", "src": "", "track": 2, "start": 0, "in": 0, "out": 1,
+             "text": "It's 100%: done; [x]\nline two", "x": 0.5, "y": 0.5, "tsize": 0.12,
+             "color": "#ffffff", "bg": True})
+        self.json("/api/project", project)
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        W, H = 640, 360
+
+        def frame_at(sec):
+            return subprocess.run(["ffmpeg", "-v", "error", "-ss", str(sec), "-i", state["output"], "-frames:v", "1",
+                                   "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True, check=True).stdout
+
+        def off_grey(img, x0, y0, w, h):    # mean distance from the background's grey
+            vals = [img[y * W + x] for y in range(y0, y0 + h) for x in range(x0, x0 + w)]
+            return sum(abs(v - 128) for v in vals) / len(vals)
+
+        during, after = frame_at(0.5), frame_at(1.5)
+        self.assertGreater(off_grey(during, W // 2 - 120, H // 2 - 30, 240, 60), 30, "the text and its box are drawn")
+        self.assertLess(off_grey(during, 0, 0, 40, 40), 8, "the rest of the picture is untouched")
+        self.assertLess(off_grey(after, W // 2 - 120, H // 2 - 30, 240, 60), 8, "the text ends with its clip")
+
     def test_9b_three_portrait_clips_side_by_side(self):
         # Three portrait clips in a landscape canvas, each filling a third, as "Side by side" sets them.
         colours = {"red": (255, 0, 0), "lime": (0, 255, 0), "blue": (0, 0, 255)}

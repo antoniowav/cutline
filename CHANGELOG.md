@@ -12,6 +12,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   in one landscape frame.
 - Music and voiceovers: add MP3, M4A, AAC, WAV, FLAC, OGG or Opus files from the videos
   folder or ~/Music with ＋ Media. They go on a track at the playhead and add sound only.
+- Text: ＋ Text (or T) adds a title or caption at the playhead. Type it, set its size and
+  colour, give it a box, drag it in the preview; it's trimmed and moved on the timeline like a clip.
 
 ### Fixed
 - Phone videos filmed in landscape no longer open in a portrait canvas: the

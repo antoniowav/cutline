@@ -30,6 +30,8 @@ original files.
   columns, so three phone videos fill one landscape frame.
 - **Music and voiceovers**: add audio files (MP3, M4A, WAV, FLAC, …) from your videos folder or
   `~/Music`; they get their own track with a waveform and their own volume.
+- **Text**: titles and captions (＋ Text or **T**), with size, colour and a background box; drag
+  them in the preview. The export draws them with the same font, so they look as they do here.
 - **Smooth preview**: light 540p proxies are made in the background, on the GPU through VA-API when available, falling back to the CPU.
 - **HDR → SDR**: iPhone HLG / Dolby Vision footage is tone-mapped (libplacebo on the GPU, zscale on the CPU as a fallback), so it doesn't look washed out or red.
 - **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size or 1080p.

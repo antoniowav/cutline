@@ -218,6 +218,46 @@ def num(value, lo, hi):
     return min(max(x, lo), hi)
 
 
+COLOR = re.compile(r"#[0-9a-fA-F]{6}")
+MAX_TEXT = 500
+
+
+def clean_clip(c):
+    clip = {"id": int(c["id"]), "track": int(c["track"]),
+            "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6)}
+    if c.get("kind") == "text":
+        # Text goes into ffmpeg through a file, never the filter graph, so any characters are fine.
+        return {**clip, "kind": "text", "src": "", "text": str(c.get("text", ""))[:MAX_TEXT],
+                "x": num(c.get("x", 0.5), -0.5, 1.5), "y": num(c.get("y", 0.85), -0.5, 1.5),
+                "tsize": num(c.get("tsize", 0.07), 0.01, 0.5),
+                "color": c["color"] if COLOR.fullmatch(str(c.get("color", ""))) else "#ffffff",
+                "bg": bool(c.get("bg", True))}
+    return {**clip, "src": str(c["src"]),
+            "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
+            "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
+            "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit"}
+
+
+_text_font = None
+
+
+def text_font():
+    """The font titles and captions are drawn with, in the preview and the export: the
+    desktop's bold sans-serif. {"family", "file"}, or None without fontconfig."""
+    global _text_font
+    if _text_font is None:
+        _text_font = {}
+        try:
+            out = subprocess.run(["fc-match", "sans-serif:bold", "--format", "%{family[0]}|%{file}"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            family, file = out.split("|", 1)
+            if family and Path(file).is_file() and "'" not in file:
+                _text_font = {"family": family, "file": file}
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return _text_font or None
+
+
 def clean_project(p):
     """What the export reads from a project, every value checked: these end up in a file
     name and in ffmpeg's filter graph, and the project comes in over HTTP."""
@@ -230,12 +270,7 @@ def clean_project(p):
             "sources": [{"id": str(src["id"])} for src in p.get("sources", [])],
             "tracks": [{"id": int(t["id"]), "hidden": bool(t.get("hidden")), "muted": bool(t.get("muted"))}
                        for t in p["tracks"]],
-            "clips": [{"id": int(c["id"]), "src": str(c["src"]), "track": int(c["track"]),
-                       "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6),
-                       "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
-                       "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
-                       "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit"}
-                      for c in p["clips"]],
+            "clips": [clean_clip(c) for c in p["clips"]],
         }
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise ValueError("This project can't be exported: its data is damaged") from e
@@ -485,6 +520,8 @@ class App:
         clips = [c for c in project["clips"]
                  if c["track"] in tracks and not tracks[c["track"]].get("hidden")
                  and c["src"] in self.sources and c["out"] - c["in"] > 0.04]
+        texts = [c for c in project["clips"] if c.get("kind") == "text" and c["track"] in tracks
+                 and not tracks[c["track"]].get("hidden") and c["text"].strip() and c["out"] - c["in"] > 0.04]
         if not clips:
             raise ValueError("Nothing to export: the timeline is empty.")
         clips.sort(key=lambda c: (order.index(c["track"]), c["start"]))
@@ -505,7 +542,8 @@ class App:
             if c in base:                          # the base track is one continuous strip
                 sf[i] = max(sf[i], cursor)
                 cursor = sf[i] + nf[i]
-        total_f = max(sf[id(c)] + nf[id(c)] for c in clips)
+        total_f = max([sf[id(c)] + nf[id(c)] for c in clips]
+                      + [frames(c["start"]) + max(1, frames(c["out"] - c["in"])) for c in texts])
         total = total_f / FPS
         first_id = project["sources"][0]["id"] if project.get("sources") else clips[0]["src"]
         first = self.sources.get(first_id) or self.sources[clips[0]["src"]]
@@ -582,6 +620,31 @@ class App:
             graph.append(f"[b{layer}][o{k}]overlay=x={x}:y={y}:eof_action=pass:"
                          f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
             layer += 1
+        # Titles and captions on top of everything, in track order. The text reaches ffmpeg
+        # through a file (textfile, expansion=none), so nothing typed can change the graph.
+        if texts:
+            font = text_font()
+            if not font:
+                raise ValueError("Can't draw text: no font found (fontconfig's fc-match is missing)")
+            folder = CACHE / "text"
+            folder.mkdir(parents=True, exist_ok=True)
+            for stale in folder.glob("*.txt"):           # the last export's
+                stale.unlink(missing_ok=True)
+            if "'" in str(folder):
+                raise ValueError("Can't draw text: the cache folder's path contains a quote")
+            texts.sort(key=lambda c: (order.index(c["track"]), c["start"]))
+            for n, c in enumerate(texts):
+                file = folder / f"{n}.txt"
+                file.write_text(c["text"])
+                st = frames(c["start"]) / FPS
+                en = (frames(c["start"]) + max(1, frames(c["out"] - c["in"]))) / FPS
+                size = max(4, round(H * c["tsize"]))
+                bg = f":box=1:boxcolor=black@0.55:boxborderw={max(2, round(size * 0.3))}" if c["bg"] else ""
+                graph.append(f"[b{layer}]drawtext=fontfile='{font['file']}':textfile='{file}':expansion=none:"
+                             f"fontsize={size}:fontcolor=0x{c['color'][1:]}:text_align=C:"
+                             f"x=W*{c['x']:.4f}-text_w/2:y=H*{c['y']:.4f}-text_h/2{bg}:"
+                             f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
+                layer += 1
         graph.append(f"[b{layer}]" + ("scale=-2:1080," if scale1080 and H > 1080 else "")
                      + f"format=yuv420p,{SDR_TAGS},trim=end_frame={total_f}[vout]")
 
@@ -817,6 +880,7 @@ def handler_for(app: App):
                 if not app.project_file:
                     return self.send_json({"error": "no project open"}, 404)
                 return self.send_json({"project": app.load(), "theme": theme(),
+                                       "textFont": (text_font() or {}).get("family", "sans-serif"),
                                        "sources": {sid: s.public() for sid, s in app.sources.items()},
                                        "export": app.export})
             self.send_json({"error": "not found"}, 404)
