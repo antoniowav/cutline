@@ -209,6 +209,16 @@ class CutlineServer(unittest.TestCase):
         self.assertEqual((status, len(data)), (206, 100))
         self.assertEqual(self.call(f"/media/{sid}", headers={"Range": "bytes=500-100"})[0], 416)
 
+    def test_9_turned_phone_video_gets_a_landscape_canvas(self):
+        # Stored portrait and tagged to play a quarter turn round, as phones do.
+        plain, turned = self.videos / "plain.mp4", self.videos / "turned.mp4"
+        ffmpeg("-f", "lavfi", "-i", f"testsrc2=s=360x640:r={FPS}:d=1",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(plain))
+        ffmpeg("-display_rotation:v:0", "-90", "-i", str(plain), "-c", "copy", str(turned))
+        self.json("/api/new", {"path": str(turned)})
+        canvas = self.json("/api/project")["project"]["canvas"]
+        self.assertEqual((canvas["w"], canvas["h"]), (640, 360))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

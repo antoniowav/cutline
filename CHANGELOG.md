@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Fixed
+- Phone videos filmed in landscape no longer open in a portrait canvas: the
+  rotation the phone tags them with is now taken into account.
+
 ## [0.1.1] - 2026-10-05
 
 ### Added
