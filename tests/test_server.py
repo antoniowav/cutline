@@ -254,7 +254,7 @@ class CutlineServer(unittest.TestCase):
             for x, y in ((third * W // 3 + W // 6, H // 2), (third * W // 3 + 4, 4),
                          ((third + 1) * W // 3 - 5, H - 5)):
                 got = pixel(x, y)
-                self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want)),
+                self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want, strict=True)),
                                 f"pixel {x},{y} is {tuple(got)}, wanted about {want}")
 
 
