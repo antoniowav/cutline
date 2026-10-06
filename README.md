@@ -25,6 +25,9 @@ original files.
 - **Selection**: click, Shift-click, box-select by dragging over empty space, or select a **gap** and delete it to close it.
 - **Per-clip volume**, 0–200 %, with the waveform following along.
 - **Picture-in-picture**: put any clip full screen or in a corner, at 10–70 % size.
+- **Free layout**: drag any clip anywhere in the preview and resize it from its corners, with snapping
+  to halves, thirds and quarters. **Side by side** puts the clips under the playhead in equal
+  columns, so three phone videos fill one landscape frame.
 - **Smooth preview**: light 540p proxies are made in the background, on the GPU through VA-API when available, falling back to the CPU.
 - **HDR → SDR**: iPhone HLG / Dolby Vision footage is tone-mapped (libplacebo on the GPU, zscale on the CPU as a fallback), so it doesn't look washed out or red.
 - **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size or 1080p.
@@ -93,7 +96,10 @@ Start screen and *Add video* list: <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>E
 - **Scroll / swipe** to move along the timeline; **Ctrl+scroll** or **pinch** to zoom;
   scroll over the track names (or **Alt+scroll**) to scroll through tracks.
 - Track header: **visible / hidden**, **sound / muted**, **×** removes an empty track, **+ track** adds one.
-- Inspector: **Layout** (full screen or a corner), **Size** for corner clips, **Volume** (double-click to reset to 100 %).
+- Inspector: **Layout** (full screen, a corner, or Free), **Size** for corner clips, **Fit / Fill** for free clips
+  (Fill crops to cover the box), **Side by side**, **Volume** (double-click to reset to 100 %).
+- Preview: click a clip to select it; drag a Free clip to move it, drag a corner to resize (**Shift** keeps
+  its shape, **Alt** turns off snapping).
 
 ## Requirements
 

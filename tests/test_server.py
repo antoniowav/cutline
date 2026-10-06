@@ -219,6 +219,44 @@ class CutlineServer(unittest.TestCase):
         canvas = self.json("/api/project")["project"]["canvas"]
         self.assertEqual((canvas["w"], canvas["h"]), (640, 360))
 
+    def test_9b_three_portrait_clips_side_by_side(self):
+        # Three portrait clips in a landscape canvas, each filling a third, as "Side by side" sets them.
+        colours = {"red": (255, 0, 0), "lime": (0, 255, 0), "blue": (0, 0, 255)}
+        for name in colours:
+            ffmpeg("-f", "lavfi", "-i", f"color=c={name}:s=360x640:r={FPS}:d=1",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", str(self.videos / f"{name}.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "sdr.mp4")})      # a 640x360 canvas
+        for name in colours:
+            self.json("/api/addsource", {"path": str(self.videos / f"{name}.mp4")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2, 3)]
+        project["clips"] = [
+            {"id": i, "src": ids[f"{name}.mp4"], "track": i, "start": 0, "in": 0, "out": 1, "layout": "free",
+             "fit": "fill", "box": {"x": (i - 1) / 3, "y": 0, "w": 1 / 3, "h": 1}, "size": 0.3}
+            for i, name in enumerate(colours, 1)]
+        self.json("/api/project", project)
+
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        W, H = 640, 360
+        rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", "0.5", "-i", state["output"], "-frames:v", "1",
+                              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+        self.assertEqual(len(rgb), W * H * 3)
+
+        def pixel(x, y):
+            return rgb[(y * W + x) * 3:(y * W + x) * 3 + 3]
+
+        for third, want in enumerate(colours.values()):
+            # the middle and the corners of each column: filled, so no black bars anywhere
+            for x, y in ((third * W // 3 + W // 6, H // 2), (third * W // 3 + 4, 4),
+                         ((third + 1) * W // 3 - 5, H - 5)):
+                got = pixel(x, y)
+                self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want)),
+                                f"pixel {x},{y} is {tuple(got)}, wanted about {want}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -31,6 +31,14 @@
            align-items:center; justify-content:center; overflow:hidden; }
   #box { position:relative; background:#000; overflow:hidden; }
   #box video { position:absolute; display:none; object-fit:contain; }
+  #frame { position:absolute; display:none; z-index:1000; border:2px solid var(--accent); cursor:move;
+    box-sizing:border-box; }
+  #frame i { position:absolute; width:12px; height:12px; background:var(--accent); border-radius:2px; }
+  #frame i[data-c=nw] { left:-7px; top:-7px; cursor:nwse-resize; }
+  #frame i[data-c=ne] { right:-7px; top:-7px; cursor:nesw-resize; }
+  #frame i[data-c=sw] { left:-7px; bottom:-7px; cursor:nesw-resize; }
+  #frame i[data-c=se] { right:-7px; bottom:-7px; cursor:nwse-resize; }
+  .guide { position:absolute; z-index:999; background:var(--accent); opacity:.7; pointer-events:none; }
   #timelineWrap { flex:none; position:relative; border-top:1px solid var(--bg3); }
   canvas { display:block; width:100%; height:100%; }
   footer { padding:4px 12px; background:var(--bg2); border-top:1px solid var(--bg3); color:var(--muted);
@@ -67,7 +75,7 @@
   <select id="quality" title="Export size"><option value="orig">Original size</option><option value="1080">1080p</option></select>
   <button class="primary" id="exportBtn">Export</button>
 </header>
-<div id="stage"><div id="box"></div></div>
+<div id="stage"><div id="box"></div><div id="frame"><i data-c="nw"></i><i data-c="ne"></i><i data-c="sw"></i><i data-c="se"></i></div></div>
 <div id="inspector">
   <span class="muted" id="selInfo">Click a clip to select it</span>
   <span class="spacer"></span>
@@ -75,14 +83,18 @@
     <select id="layout" disabled>
       <option value="full">Full screen</option><option value="tl">Top left</option>
       <option value="tr">Top right</option><option value="bl">Bottom left</option><option value="br">Bottom right</option>
+      <option value="free">Free (drag in preview)</option>
     </select></label>
+  <label class="muted" title="Fit shows the whole video; Fill crops it to cover its box">
+    <select id="fit" disabled><option value="fit">Fit</option><option value="fill">Fill (crop)</option></select></label>
+  <button id="arrangeBtn" title="Put the clips under the playhead side by side, in equal columns">Side by side</button>
   <label class="muted">Size <input id="size" type="range" min="10" max="70" step="1" value="30" disabled> <span id="sizeVal">30%</span></label>
   <label class="muted" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
 </div>
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
   <b>Space</b> play · <b>S</b> split · <b>Del</b> remove (<b>Shift</b> keeps gap) · <b>Q</b>/<b>W</b> trim to playhead ·
-  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · click a <b>gap</b> + Del to close it · <b>A</b> add video · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
+  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
   pinch / <b>Ctrl</b>+scroll zooms · <b>0</b> fit · <b>Ctrl+Z</b> undo
 </footer>
 <div id="picker"><div class="panel">
@@ -118,6 +130,7 @@ const frame = () => 1 / (P?.canvas.fps || 30);
 const trackIdx = id => P.tracks.findIndex(tr => tr.id === id);
 const track = id => P.tracks.find(tr => tr.id === id);
 const nextId = () => P.clips.reduce((a, c) => Math.max(a, c.id), 0) + 1;
+const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
 const clipAt = (trackId, at) => P.clips.find(c => c.track === trackId && at >= c.start - 1e-6 && at < end(c) - 1e-6);
 function toast(msg, ms = 2600) { const el = $("toast"); el.textContent = msg; el.style.display = "block";
   clearTimeout(toast.h); toast.h = setTimeout(() => el.style.display = "none", ms); }
@@ -179,12 +192,19 @@ function fitBox() {
   const st = $("stage"), W = P.canvas.w, H = P.canvas.h;
   const s = Math.min((st.clientWidth - 16) / W, (st.clientHeight - 16) / H);
   box.style.width = `${Math.floor(W * s)}px`; box.style.height = `${Math.floor(H * s)}px`;
+  if (typeof showFrame === "function") showFrame();
 }
 function place(v, c) {
   const bw = box.clientWidth, bh = box.clientHeight;
-  const key = `${bw}x${bh}:${c.layout}:${c.size}`;
+  const b = c.box || FULL_BOX;
+  const key = `${bw}x${bh}:${c.layout}:${c.size}:${b.x},${b.y},${b.w},${b.h}:${c.fit}`;
   if (v._place === key) return;                     // style writes are costly; only when something changed
   v._place = key;
+  v.style.objectFit = c.layout === "free" && c.fit === "fill" ? "cover" : "contain";
+  if (c.layout === "free") {
+    Object.assign(v.style, { left: `${b.x * bw}px`, top: `${b.y * bh}px`, width: `${b.w * bw}px`, height: `${b.h * bh}px` });
+    return;
+  }
   if (!c.layout || c.layout === "full") { Object.assign(v.style, { left: "0px", top: "0px", width: `${bw}px`, height: `${bh}px` }); return; }
   const w = bw * c.size, h = bh * c.size, m = bw * 0.03;
   const x = c.layout.endsWith("l") ? m : bw - w - m, y = c.layout.startsWith("t") ? m : bh - h - m;
@@ -212,6 +232,7 @@ function sync(force) {
       if (force || Math.abs(v.currentTime - want) > 0.03) seekTo(v, want);
     }
   }
+  showFrame();                         // the frame follows the clip as the playhead moves on or off it
 }
 function play() {
   if (!P.clips.length) return;
@@ -310,14 +331,148 @@ function showInspector() {
   const first = P.clips.find(c => selected.has(c.id));
   $("vol").disabled = !first;
   if (first) { $("vol").value = Math.round(vol(first) * 100); $("volVal").textContent = `${$("vol").value}%`; }
-  $("layout").disabled = !one; $("size").disabled = !one || one.layout === "full";
+  $("layout").disabled = !one; $("size").disabled = !one || one.layout === "full" || one.layout === "free";
+  $("fit").disabled = !one || one.layout !== "free";
+  if (one) $("fit").value = one.fit === "fill" ? "fill" : "fit";
+  showFrame();
   if (!one) { $("selInfo").textContent = gap ? `Gap of ${fmt(gap.end - gap.start)} selected — Delete closes it`
       : selected.size ? `${selected.size} clips selected` : "Click a clip to select it"; return; }
   $("selInfo").textContent = `${S[one.src]?.name || "offline"} · ${track(one.track).name} · ${fmt(len(one))}`;
   $("layout").value = one.layout || "full";
   $("size").value = Math.round((one.size || 0.3) * 100); $("sizeVal").textContent = `${$("size").value}%`;
 }
-$("layout").onchange = () => { const c = P.clips.find(c => selected.has(c.id)); if (c) change(() => { c.layout = $("layout").value; }); };
+$("layout").onchange = () => {
+  const c = P.clips.find(c => selected.has(c.id)); if (!c) return;
+  change(() => {
+    // Going free starts from where the clip is now, so nothing jumps.
+    if ($("layout").value === "free" && c.layout !== "free") c.box = currentBox(c);
+    c.layout = $("layout").value;
+  });
+};
+$("fit").onchange = () => { const c = P.clips.find(c => selected.has(c.id)); if (c) change(() => { c.fit = $("fit").value; }); };
+
+// The box a clip covers now, as shares of the canvas (corners use the export's margin).
+function currentBox(c) {
+  if (c.layout === "free" && c.box) return { ...c.box };
+  if (!c.layout || c.layout === "full") return { ...FULL_BOX };
+  const s = c.size || 0.3, mx = 0.03, my = 0.03 * P.canvas.w / P.canvas.h;
+  return { x: c.layout.endsWith("l") ? mx : 1 - s - mx, y: c.layout.startsWith("t") ? my : 1 - s - my, w: s, h: s };
+}
+
+// Side by side: the selected clips, or else every visible clip under the playhead,
+// in equal columns from the bottom track (left) up, each filling its column.
+$("arrangeBtn").onclick = () => {
+  let clips = P.clips.filter(c => selected.has(c.id));
+  if (clips.length < 2) clips = P.tracks.filter(tr => !tr.hidden).map(tr => clipAt(tr.id, t)).filter(Boolean);
+  if (clips.length < 2) return toast("Put two or more clips on different tracks under the playhead, then try again");
+  clips.sort((a, b) => trackIdx(a.track) - trackIdx(b.track));
+  change(() => clips.forEach((c, i) => {
+    c.layout = "free"; c.fit = "fill"; c.box = { x: i / clips.length, y: 0, w: 1 / clips.length, h: 1 };
+  }));
+  toast(`${clips.length} clips side by side — drag them in the preview to adjust`);
+};
+
+// ---------- preview: move and resize a free clip ----------
+const frameEl = $("frame"), stageEl = $("stage");
+const GUIDES = [0, 0.25, 1 / 3, 0.5, 2 / 3, 0.75, 1];
+function selectedFree() {
+  const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null;
+  return c && c.layout === "free" && !track(c.track).hidden && clipAt(c.track, t) === c ? c : null;
+}
+function showFrame() {
+  const c = selectedFree();
+  if (!c) { frameEl.style.display = "none"; return; }
+  // Outline the part that is on the canvas, so the handles stay reachable when the
+  // clip hangs off an edge; dragging a handle moves the real edge just as far.
+  const bw = box.clientWidth, bh = box.clientHeight, b = c.box;
+  const x0 = Math.max(0, b.x * bw), y0 = Math.max(0, b.y * bh);
+  const x1 = Math.min(bw, (b.x + b.w) * bw), y1 = Math.min(bh, (b.y + b.h) * bh);
+  if (x1 - x0 < 4 || y1 - y0 < 4) { frameEl.style.display = "none"; return; }
+  Object.assign(frameEl.style, { display: "block", left: `${box.offsetLeft + x0}px`, top: `${box.offsetTop + y0}px`,
+    width: `${x1 - x0}px`, height: `${y1 - y0}px` });
+}
+// The topmost visible clip under a point of the preview.
+function clipUnder(px, py) {
+  const bw = box.clientWidth, bh = box.clientHeight;
+  for (let i = P.tracks.length - 1; i >= 0; i--) {
+    const tr = P.tracks[i]; if (tr.hidden) continue;
+    const c = clipAt(tr.id, t); if (!c) continue;
+    const b = currentBox(c);
+    if (px >= b.x * bw && px <= (b.x + b.w) * bw && py >= b.y * bh && py <= (b.y + b.h) * bh) return c;
+  }
+  return null;
+}
+// Snap a value (share of the canvas) to the nearest guide within a few pixels; returns [value, guide].
+function snapTo(v, px) {
+  let best = null;
+  for (const g of GUIDES) if (Math.abs(v - g) * px < 8 && (best === null || Math.abs(v - g) < Math.abs(v - best))) best = g;
+  return best === null ? [v, null] : [best, best];
+}
+function showGuides(gx, gy) {
+  box.querySelectorAll(".guide").forEach(el => el.remove());
+  const add = (style) => { const el = document.createElement("div"); el.className = "guide"; Object.assign(el.style, style); box.appendChild(el); };
+  if (gx !== null) add({ left: `${gx * box.clientWidth - 1}px`, top: "0", width: "2px", height: "100%" });
+  if (gy !== null) add({ top: `${gy * box.clientHeight - 1}px`, left: "0", height: "2px", width: "100%" });
+}
+let boxDrag = null;
+stageEl.addEventListener("pointerdown", (e) => {
+  if (e.button !== 0) return;
+  const r = box.getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  const corner = e.target.dataset?.c;
+  let c = selectedFree();
+  if (!corner && !(e.target === frameEl && c)) {   // a click picks the clip under it; only a free clip can be dragged
+    const hit = clipUnder(px, py);
+    if (!hit) return;
+    if (!selected.has(hit.id) || selected.size !== 1) { selected = new Set([hit.id]); gap = null; showInspector(); draw(); }
+    c = hit.layout === "free" ? hit : null;
+    if (!c) return toast("Set Layout to Free to move this clip around");
+  }
+  e.preventDefault(); stageEl.setPointerCapture(e.pointerId);
+  boxDrag = { c, corner, px, py, start: { ...c.box }, aspect: c.box.w * box.clientWidth / (c.box.h * box.clientHeight) };
+  sliderStart();
+});
+stageEl.addEventListener("pointermove", (e) => {
+  if (!boxDrag) return;
+  const { c, corner, start } = boxDrag, bw = box.clientWidth, bh = box.clientHeight;
+  const r = box.getBoundingClientRect();
+  const dx = (e.clientX - r.left - boxDrag.px) / bw, dy = (e.clientY - r.top - boxDrag.py) / bh;
+  const snap = !e.altKey;              // Alt drags freely
+  let gx = null, gy = null, b = { ...start };
+  if (!corner) {
+    b.x = start.x + dx; b.y = start.y + dy;
+    if (snap) {                        // snap whichever edge or centre is closest to a guide
+      for (const off of [0, b.w / 2, b.w]) {
+        const [v, g] = snapTo(b.x + off, bw); if (g !== null && gx === null) { b.x = v - off; gx = g; }
+      }
+      for (const off of [0, b.h / 2, b.h]) {
+        const [v, g] = snapTo(b.y + off, bh); if (g !== null && gy === null) { b.y = v - off; gy = g; }
+      }
+    }
+  } else {
+    // Drag a corner; the opposite corner stays put. Shift keeps the shape.
+    let x0 = start.x, y0 = start.y, x1 = start.x + start.w, y1 = start.y + start.h;
+    if (corner.includes("w")) x0 += dx; else x1 += dx;
+    if (corner.includes("n")) y0 += dy; else y1 += dy;
+    if (snap) {
+      if (corner.includes("w")) { const [v, g] = snapTo(x0, bw); x0 = v; gx = g; } else { const [v, g] = snapTo(x1, bw); x1 = v; gx = g; }
+      if (corner.includes("n")) { const [v, g] = snapTo(y0, bh); y0 = v; gy = g; } else { const [v, g] = snapTo(y1, bh); y1 = v; gy = g; }
+    }
+    const minW = 24 / bw, minH = 24 / bh;
+    if (x1 - x0 < minW) { if (corner.includes("w")) x0 = x1 - minW; else x1 = x0 + minW; }
+    if (y1 - y0 < minH) { if (corner.includes("n")) y0 = y1 - minH; else y1 = y0 + minH; }
+    b = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    if (e.shiftKey) {                  // keep the starting shape: height follows width
+      const h = b.w * bw / boxDrag.aspect / bh;
+      if (corner.includes("n")) b.y = y1 - h;
+      b.h = h; gy = null;
+    }
+  }
+  b.x = Math.min(Math.max(b.x, -1), 1); b.y = Math.min(Math.max(b.y, -1), 1);
+  c.box = b; showGuides(gx, gy); sync(true); showFrame();
+});
+const endBoxDrag = () => { if (!boxDrag) return; boxDrag = null; showGuides(null, null); sliderEnd(); draw(); };
+stageEl.addEventListener("pointerup", endBoxDrag);
+stageEl.addEventListener("pointercancel", endBoxDrag);
 // Sliders change things live; the state from before the drag becomes one undo step.
 let sliderBefore = null;
 function sliderStart() { if (sliderBefore === null) sliderBefore = snap(); }
@@ -450,7 +605,7 @@ function drawClip(c, x0, y0, alpha) {
       const hh = Math.max(1, Math.min(1, m * vol(c)) * (WAVE - 4)); ctx.fillRect(x, mid - hh / 2, 1, hh);
     }
   }
-  const label = (src ? src.name : "offline") + (c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
+  const label = (src ? src.name : "offline") + (c.layout === "free" ? " · FREE" : c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
               + (vol(c) !== 1 ? ` · vol ${Math.round(vol(c) * 100)}%` : "");
   ctx.font = `11px ${colors.font}`; const lw = ctx.measureText(label).width + 8;
   ctx.globalAlpha = alpha * 0.75; ctx.fillStyle = colors.dark_background; ctx.fillRect(x0 + 2, y0 + 2, Math.min(lw, w - 4), 15);

@@ -185,7 +185,15 @@ def current_font():
 
 
 MAX_BODY = 16 << 20                  # a project is a few KB; refuse anything absurd
-LAYOUTS = {"full", "tl", "tr", "bl", "br"}
+LAYOUTS = {"full", "tl", "tr", "bl", "br", "free"}
+FULL_BOX = {"x": 0.0, "y": 0.0, "w": 1.0, "h": 1.0}
+
+
+def clean_box(box):
+    """A free clip's box, as shares of the canvas. It may hang off the edges a little."""
+    box = box if isinstance(box, dict) else FULL_BOX
+    return {"x": num(box.get("x", 0), -1, 1), "y": num(box.get("y", 0), -1, 1),
+            "w": num(box.get("w", 1), 0.02, 2), "h": num(box.get("h", 1), 0.02, 2)}
 
 
 def safe_name(name):
@@ -215,7 +223,8 @@ def clean_project(p):
             "clips": [{"id": int(c["id"]), "src": str(c["src"]), "track": int(c["track"]),
                        "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6),
                        "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
-                       "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4)}
+                       "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
+                       "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit"}
                       for c in p["clips"]],
         }
     except (KeyError, TypeError, ValueError, AttributeError) as e:
@@ -490,13 +499,28 @@ class App:
             args += ["-ss", f"{c['in']:.4f}", "-t", f"{nf[id(c)] / FPS + 0.25:.4f}",
                      "-i", str(self.sources[c["src"]].path)]
 
+        def box_px(c):
+            """A clip's box in pixels: x, y, width, height (even sizes, as yuv420p needs)."""
+            layout = c.get("layout", "full")
+            if layout == "full":
+                return 0, 0, W, H
+            if layout == "free":
+                b = c["box"]
+                return (round(W * b["x"]), round(H * b["y"]),
+                        max(16, round(W * b["w"]) // 2 * 2), max(16, round(H * b["h"]) // 2 * 2))
+            size = float(c.get("size", 0.3))
+            return 0, 0, max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2)
+
         def video(k, c, pad_full):
             full = c.get("layout", "full") == "full"
-            size = float(c.get("size", 0.3))
-            bw, bh = (W, H) if full else (max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2))
+            _, _, bw, bh = box_px(c)
             color = tonemap() if self.sources[c["src"]].info.get("hdr") else f"format=yuv420p,{SDR_TAGS}"
-            f = (f"[{k}:v:0]fps={FPS},{color},scale={bw}:{bh}:force_original_aspect_ratio=decrease,"
-                 f"scale=trunc(iw/2)*2:trunc(ih/2)*2")
+            if c.get("layout") == "free" and c.get("fit") == "fill":
+                # cover the box, cropping the overflow evenly from both sides
+                size = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}"
+            else:
+                size = f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
+            f = f"[{k}:v:0]fps={FPS},{color},{size}"
             if pad_full and full:
                 f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
             # exactly n frames: hold the last frame if the source runs short, then cut
@@ -531,7 +555,11 @@ class App:
             if c in base:
                 continue
             st, en = sf[id(c)] / FPS, (sf[id(c)] + nf[id(c)]) / FPS
-            x, y = pos.get(c.get("layout", "full"), pos["full"])
+            if c.get("layout") == "free":              # centred in its box (a filled clip is the box)
+                bx, by, bw, bh = box_px(c)
+                x, y = f"{bx}+({bw}-w)/2", f"{by}+({bh}-h)/2"
+            else:
+                x, y = pos.get(c.get("layout", "full"), pos["full"])
             graph.append(video(k, c, False) + f",setpts=PTS-STARTPTS+{st:.4f}/TB[o{k}]")
             graph.append(f"[b{layer}][o{k}]overlay=x={x}:y={y}:eof_action=pass:"
                          f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")

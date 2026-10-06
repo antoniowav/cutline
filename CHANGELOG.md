@@ -5,6 +5,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+### Added
+- Free layout: drag a clip anywhere in the preview and resize it from its corners, with
+  snapping; Fit or Fill (crop) per clip.
+- Side by side: the clips under the playhead in equal columns, e.g. three phone videos
+  in one landscape frame.
+
 ### Fixed
 - Phone videos filmed in landscape no longer open in a portrait canvas: the
   rotation the phone tags them with is now taken into account.
