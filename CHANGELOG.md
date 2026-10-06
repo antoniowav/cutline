@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   snapping; Fit or Fill (crop) per clip.
 - Side by side: the clips under the playhead in equal columns, e.g. three phone videos
   in one landscape frame.
+- Music and voiceovers: add MP3, M4A, AAC, WAV, FLAC, OGG or Opus files from the videos
+  folder or ~/Music with ＋ Media. They go on a track at the playhead and add sound only.
 
 ### Fixed
 - Phone videos filmed in landscape no longer open in a portrait canvas: the

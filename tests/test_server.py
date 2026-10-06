@@ -219,6 +219,39 @@ class CutlineServer(unittest.TestCase):
         canvas = self.json("/api/project")["project"]["canvas"]
         self.assertEqual((canvas["w"], canvas["h"]), (640, 360))
 
+    def test_9a_music_on_its_own_track(self):
+        ffmpeg("-f", "lavfi", "-i", "sine=f=880:d=2", "-c:a", "aac", str(self.videos / "music.m4a"))
+        # The editor's picker offers it; the start screen, which begins from a video, doesn't.
+        self.assertIn("music.m4a", [v["name"] for v in self.json("/api/videos")["videos"]])
+        self.assertNotIn("music.m4a", [v["name"] for v in self.json("/api/home")["videos"]])
+        status, data = self.call("/api/new", {"path": str(self.videos / "music.m4a")})
+        self.assertNotEqual(status, 200)
+        self.assertIn("Start a project from a video", json.loads(data)["error"])
+
+        self.json("/api/new", {"path": str(self.videos / "sdr.mp4")})
+        music = self.json("/api/addsource", {"path": str(self.videos / "music.m4a")})
+        self.assertFalse(music["video"])
+        self.assertTrue(music["proxyReady"] and music["spriteReady"], "nothing to prepare without a picture")
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"][0]["muted"] = True                 # only the music should be heard
+        project["clips"] = [
+            {"id": 1, "src": ids["sdr.mp4"], "track": 1, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3},
+            {"id": 2, "src": ids["music.m4a"], "track": 2, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3},
+        ]
+        self.json("/api/project", project)
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        info = probe(state["output"])
+        video = next(s for s in info["streams"] if s["codec_type"] == "video")
+        self.assertEqual(int(video["nb_read_frames"]), 2 * FPS, "the music adds sound, not picture")
+        level = subprocess.run(["ffmpeg", "-i", state["output"], "-af", "volumedetect", "-f", "null", "-"],
+                               capture_output=True, text=True).stderr
+        mean = float(re.search(r"mean_volume: (-?[\d.]+) dB", level).group(1))
+        self.assertGreater(mean, -30, "the music is in the mix")
+
     def test_9b_three_portrait_clips_side_by_side(self):
         # Three portrait clips in a landscape canvas, each filling a third, as "Side by side" sets them.
         colours = {"red": (255, 0, 0), "lime": (0, 255, 0), "blue": (0, 0, 255)}

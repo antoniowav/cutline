@@ -28,6 +28,8 @@ original files.
 - **Free layout**: drag any clip anywhere in the preview and resize it from its corners, with snapping
   to halves, thirds and quarters. **Side by side** puts the clips under the playhead in equal
   columns, so three phone videos fill one landscape frame.
+- **Music and voiceovers**: add audio files (MP3, M4A, WAV, FLAC, …) from your videos folder or
+  `~/Music`; they get their own track with a waveform and their own volume.
 - **Smooth preview**: light 540p proxies are made in the background, on the GPU through VA-API when available, falling back to the CPU.
 - **HDR → SDR**: iPhone HLG / Dolby Vision footage is tone-mapped (libplacebo on the GPU, zscale on the CPU as a fallback), so it doesn't look washed out or red.
 - **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size or 1080p.

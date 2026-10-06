@@ -70,7 +70,7 @@
   <span class="spacer"></span>
   <span class="muted" id="status"></span>
   <div id="progress"><div></div></div>
-  <button id="addBtn" title="Add another video (A)">＋ Video</button>
+  <button id="addBtn" title="Add a video, music or a voiceover (A)">＋ Media</button>
   <button id="trackBtn" title="Add a track on top">＋ Track</button>
   <select id="quality" title="Export size"><option value="orig">Original size</option><option value="1080">1080p</option></select>
   <button class="primary" id="exportBtn">Export</button>
@@ -94,11 +94,11 @@
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
   <b>Space</b> play · <b>S</b> split · <b>Del</b> remove (<b>Shift</b> keeps gap) · <b>Q</b>/<b>W</b> trim to playhead ·
-  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
+  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video or audio · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
   pinch / <b>Ctrl</b>+scroll zooms · <b>0</b> fit · <b>Ctrl+Z</b> undo
 </footer>
 <div id="picker"><div class="panel">
-  <div class="head"><b>Add a video</b><span class="spacer"></span>
+  <div class="head"><b>Add a video or audio</b><span class="spacer"></span>
     <label class="muted">Put it
       <select id="placeMode">
         <option value="append">at the end of V1</option>
@@ -131,6 +131,7 @@ const trackIdx = id => P.tracks.findIndex(tr => tr.id === id);
 const track = id => P.tracks.find(tr => tr.id === id);
 const nextId = () => P.clips.reduce((a, c) => Math.max(a, c.id), 0) + 1;
 const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
+const isAudio = c => S[c.src]?.video === false;     // music or a voiceover: sound only
 const clipAt = (trackId, at) => P.clips.find(c => c.track === trackId && at >= c.start - 1e-6 && at < end(c) - 1e-6);
 function toast(msg, ms = 2600) { const el = $("toast"); el.textContent = msg; el.style.display = "block";
   clearTimeout(toast.h); toast.h = setTimeout(() => el.style.display = "none", ms); }
@@ -223,7 +224,7 @@ function sync(force) {
     const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
     if (v.dataset.media !== media) { v.src = `/media/${c.src}?${media}`; v.dataset.media = media; v._pending = null; force = true; }
     const want = c.in + (t - c.start);
-    v.muted = actx ? false : tr.muted; v.style.display = "block"; place(v, c);
+    v.muted = actx ? false : tr.muted; v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
     if (playing) {
       if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
       else if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
@@ -331,8 +332,9 @@ function showInspector() {
   const first = P.clips.find(c => selected.has(c.id));
   $("vol").disabled = !first;
   if (first) { $("vol").value = Math.round(vol(first) * 100); $("volVal").textContent = `${$("vol").value}%`; }
-  $("layout").disabled = !one; $("size").disabled = !one || one.layout === "full" || one.layout === "free";
-  $("fit").disabled = !one || one.layout !== "free";
+  const sound = one && isAudio(one);
+  $("layout").disabled = !one || sound; $("size").disabled = !one || sound || one.layout === "full" || one.layout === "free";
+  $("fit").disabled = !one || sound || one.layout !== "free";
   if (one) $("fit").value = one.fit === "fill" ? "fill" : "fit";
   showFrame();
   if (!one) { $("selInfo").textContent = gap ? `Gap of ${fmt(gap.end - gap.start)} selected — Delete closes it`
@@ -363,7 +365,8 @@ function currentBox(c) {
 // in equal columns from the bottom track (left) up, each filling its column.
 $("arrangeBtn").onclick = () => {
   let clips = P.clips.filter(c => selected.has(c.id));
-  if (clips.length < 2) clips = P.tracks.filter(tr => !tr.hidden).map(tr => clipAt(tr.id, t)).filter(Boolean);
+  clips = clips.filter(c => !isAudio(c));
+  if (clips.length < 2) clips = P.tracks.filter(tr => !tr.hidden).map(tr => clipAt(tr.id, t)).filter(c => c && !isAudio(c));
   if (clips.length < 2) return toast("Put two or more clips on different tracks under the playhead, then try again");
   clips.sort((a, b) => trackIdx(a.track) - trackIdx(b.track));
   change(() => clips.forEach((c, i) => {
@@ -396,7 +399,7 @@ function clipUnder(px, py) {
   const bw = box.clientWidth, bh = box.clientHeight;
   for (let i = P.tracks.length - 1; i >= 0; i--) {
     const tr = P.tracks[i]; if (tr.hidden) continue;
-    const c = clipAt(tr.id, t); if (!c) continue;
+    const c = clipAt(tr.id, t); if (!c || isAudio(c)) continue;
     const b = currentBox(c);
     if (px >= b.x * bw && px <= (b.x + b.w) * bw && py >= b.y * bh && py <= (b.y + b.h) * bh) return c;
   }
@@ -820,11 +823,11 @@ async function openPicker() {
 }
 function renderPicker() {
   const ul = $("pickList"); ul.innerHTML = "";
-  if (!pickItems.length) { ul.innerHTML = `<li class="muted"></li>`; ul.firstChild.textContent = `No videos found in ${pickDir}`; return; }
+  if (!pickItems.length) { ul.innerHTML = `<li class="muted"></li>`; ul.firstChild.textContent = `No videos or audio found in ${pickDir} or ~/Music`; return; }
   pickItems.forEach((v, i) => {
     const li = document.createElement("li"); if (i === pickActive) li.className = "active";
     li.innerHTML = `<span class="n"></span><span class="muted"></span>`;
-    li.children[0].textContent = v.name; li.children[1].textContent = v.modified;
+    li.children[0].textContent = (v.audio ? "♪ " : "") + v.name; li.children[1].textContent = v.modified;
     li.onclick = () => addVideo(v.path); ul.appendChild(li);
   });
 }
@@ -845,13 +848,14 @@ async function addVideo(path) {
   change(() => {
     if (!P.sources.some(s => s.id === r.id)) P.sources.push({ id: r.id, path: r.path });
     const c = { id: nextId(), src: r.id, in: 0, out: r.duration, layout: "full", size: 0.3 };
-    if (mode === "append") {
+    if (mode === "append" && r.video !== false) {
       c.track = P.tracks[0].id;
       c.start = P.clips.filter(x => x.track === c.track).reduce((a, x) => Math.max(a, end(x)), 0);
     } else {
       let tr = P.tracks.slice(1).find(tr => freeStart(tr.id, t, len(c)) - t < 1e-6);
-      if (!tr) { tr = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: `V${P.tracks.length + 1}`, hidden: false, muted: false }; P.tracks.push(tr); }
-      c.track = tr.id; c.start = t; c.layout = "br";
+      if (!tr) { tr = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: `${r.video === false ? "A" : "V"}${P.tracks.length + 1}`, hidden: false, muted: false }; P.tracks.push(tr); }
+      c.track = tr.id; c.start = t;
+      if (r.video !== false) c.layout = "br";      // music and voiceovers go on a track at the playhead
     }
     P.clips.push(c); selected = new Set([c.id]);
   });
@@ -890,7 +894,7 @@ function watchExport() {
 async function loadSource(info) {
   S[info.id] = { ...S[info.id], ...info };
   const s = S[info.id];
-  if (info.spriteReady && !s.sprite) { const img = new Image(); img.onload = () => { s.sprite = img; draw(); }; img.src = `/sprite/${info.id}?${Date.now()}`; }
+  if (info.spriteReady && info.video !== false && !s.sprite) { const img = new Image(); img.onload = () => { s.sprite = img; draw(); }; img.src = `/sprite/${info.id}?${Date.now()}`; }
   if (info.peaksReady && info.audio && !s.peaks) { s.peaks = await (await fetch(`/peaks/${info.id}`)).json(); draw(); }
   const wasReady = s.proxyWasReady; s.proxyWasReady = info.proxyReady;
   if (info.proxyReady && !wasReady && P) sync(true);
