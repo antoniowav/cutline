@@ -12,7 +12,7 @@
   body { display:flex; flex-direction:column; }
   header, #inspector { display:flex; align-items:center; gap:12px; padding:7px 12px; background:var(--bg2);
            border-bottom:1px solid var(--bg3); white-space:nowrap; }
-  #inspector { border-top:1px solid var(--bg3); min-height:38px; }
+  #inspector { border-top:1px solid var(--bg3); min-height:38px; flex-wrap:wrap; row-gap:6px; }   /* wraps on small screens */
   .name { font-weight:700; overflow:hidden; text-overflow:ellipsis; max-width:30vw; cursor:text;
           border-bottom:1px dashed transparent; }
   .name:hover { border-bottom-color:var(--muted); }
@@ -44,8 +44,21 @@
   .caption.sel { outline:2px solid var(--accent); outline-offset:3px; }
   #textTools, #mediaTools { display:flex; align-items:center; gap:8px; }
   #textInput { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px;
-    padding:3px 6px; width:220px; resize:vertical; }
-  #tcolor { width:28px; height:24px; padding:0; border:1px solid var(--muted); background:none; }
+    padding:3px 6px; width:180px; resize:vertical; }
+  #fadeTools { display:flex; align-items:center; gap:8px; }
+  #fadeTools input, #thex { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted);
+    border-radius:4px; padding:2px 4px; }
+  #fadeTools input { width:52px; }
+  #colorWrap { position:relative; }
+  #tcolor { width:30px; height:26px; padding:3px; }
+  #tcolor i { display:block; width:100%; height:100%; border-radius:2px; border:1px solid var(--muted); }
+  #palette { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
+    border:1px solid var(--muted); border-radius:6px; padding:8px; flex-direction:column; gap:8px; }
+  #palette.open { display:flex; }
+  #swatches { display:grid; grid-template-columns:repeat(6, 22px); gap:6px; }
+  #swatches button { width:22px; height:22px; padding:0; border:1px solid var(--muted); border-radius:3px; }
+  #swatches button.on { outline:2px solid var(--accent); outline-offset:1px; }
+  #thex { width:100%; box-sizing:border-box; }
   .guide { position:absolute; z-index:999; background:var(--accent); opacity:.7; pointer-events:none; }
   #timelineWrap { flex:none; position:relative; border-top:1px solid var(--bg3); }
   canvas { display:block; width:100%; height:100%; }
@@ -103,8 +116,16 @@
   <span id="textTools" style="display:none">
     <textarea id="textInput" rows="1" placeholder="Type the text" title="Enter starts a new line"></textarea>
     <label class="muted">Size <input id="tsize" type="range" min="2" max="25" step="0.5" value="7"></label>
-    <input id="tcolor" type="color" value="#ffffff" title="Text colour">
+    <select id="tfont" title="Font"></select>
+    <label class="muted"><input id="tbold" type="checkbox" checked> Bold</label>
+    <span id="colorWrap"><button id="tcolor" title="Text colour"><i></i></button>
+      <span id="palette"><span id="swatches"></span>
+        <input id="thex" maxlength="7" spellcheck="false" placeholder="#ffffff" title="Any colour as #rrggbb"></span></span>
     <label class="muted"><input id="tbg" type="checkbox" checked> Box</label>
+  </span>
+  <span id="fadeTools" style="display:none">
+    <label class="muted" title="Seconds to fade in">Fade in <input id="fadeIn" type="number" min="0" max="30" step="0.1" value="0"> s</label>
+    <label class="muted" title="Seconds to fade out">out <input id="fadeOut" type="number" min="0" max="30" step="0.1" value="0"> s</label>
   </span>
   <label class="muted" id="volTools" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
 </div>
@@ -150,6 +171,11 @@ const nextId = () => P.clips.reduce((a, c) => Math.max(a, c.id), 0) + 1;
 const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
 const isAudio = c => S[c.src]?.video === false;     // music or a voiceover: sound only
 const isText = c => c.kind === "text";             // a title or caption, drawn over everything
+// How far a clip has faded in or out at time x: 0..1, as the export ramps it.
+function fadeAt(c, x) {
+  const d = len(c), fi = Math.min(c.fadeIn || 0, d / 2), fo = Math.min(c.fadeOut || 0, d / 2), a = x - c.start;
+  return Math.max(0, Math.min(1, fi > 0 ? a / fi : 1, fo > 0 ? (d - a) / fo : 1));
+}
 let textFont = "sans-serif";                          // the font the export draws text with
 const clipAt = (trackId, at) => P.clips.find(c => c.track === trackId && at >= c.start - 1e-6 && at < end(c) - 1e-6);
 function toast(msg, ms = 2600) { const el = $("toast"); el.textContent = msg; el.style.display = "block";
@@ -196,7 +222,7 @@ function applyGains() {
   for (const tr of P.tracks) {
     const g = gains[tr.id]; if (!g) continue;
     const c = clipAt(tr.id, t);
-    g.gain.value = tr.muted || !c ? 0 : vol(c);
+    g.gain.value = tr.muted || !c ? 0 : vol(c) * fadeAt(c, t);
   }
 }
 function buildVideos() {
@@ -356,7 +382,12 @@ function showInspector() {
   $("textTools").style.display = text ? "flex" : "none";
   $("mediaTools").style.display = $("volTools").style.display = text ? "none" : "";   // a caption has no picture or sound
   if (text) { if (document.activeElement !== $("textInput")) $("textInput").value = one.text;
-    $("tsize").value = one.tsize * 100; $("tcolor").value = one.color; $("tbg").checked = one.bg; }
+    $("tsize").value = one.tsize * 100; $("tbg").checked = one.bg; $("tbold").checked = one.bold !== false;
+    $("tfont").value = one.font || ""; showColor(one.color); }
+  const fades = one && (text || isAudio(one));
+  $("fadeTools").style.display = fades ? "flex" : "none";
+  if (fades) { if (document.activeElement !== $("fadeIn")) $("fadeIn").value = one.fadeIn || 0;
+    if (document.activeElement !== $("fadeOut")) $("fadeOut").value = one.fadeOut || 0; }
   $("vol").disabled = !first || P.clips.filter(c => selected.has(c.id)).every(isText);
   const sound = one && (isAudio(one) || text);
   $("layout").disabled = !one || sound; $("size").disabled = !one || sound || one.layout === "full" || one.layout === "free";
@@ -517,7 +548,8 @@ function drawCaptions() {
     if (!el) { el = document.createElement("div"); el.className = "caption"; el.dataset.id = c.id; captions.appendChild(el); }
     const size = Math.max(4, c.tsize * bh);
     if (el.textContent !== c.text) el.textContent = c.text || " ";
-    Object.assign(el.style, { left: `${c.x * bw}px`, top: `${c.y * bh}px`, fontSize: `${size}px`, fontFamily: `"${textFont}", sans-serif`,
+    Object.assign(el.style, { left: `${c.x * bw}px`, top: `${c.y * bh}px`, fontSize: `${size}px`,
+      fontFamily: `"${c.font || textFont}", sans-serif`, fontWeight: c.bold === false ? "normal" : "bold", opacity: fadeAt(c, t),
       color: c.color, background: c.bg ? "rgba(0,0,0,.55)" : "none", padding: c.bg ? `${Math.max(2, size * 0.3)}px` : "0",
       zIndex: trackIdx(c.track) + 1 });
     el.classList.toggle("sel", selected.has(c.id));
@@ -544,9 +576,39 @@ $("textInput").onchange = sliderEnd;
 $("textInput").onblur = sliderEnd;
 $("tsize").oninput = () => { const c = selText(); if (!c) return; sliderStart(); c.tsize = $("tsize").value / 100; drawCaptions(); };
 $("tsize").onchange = sliderEnd;
-$("tcolor").oninput = () => { const c = selText(); if (!c) return; sliderStart(); c.color = $("tcolor").value; drawCaptions(); };
-$("tcolor").onchange = sliderEnd;
 $("tbg").onchange = () => { const c = selText(); if (c) change(() => { c.bg = $("tbg").checked; }); };
+$("tbold").onchange = () => { const c = selText(); if (c) change(() => { c.bold = $("tbold").checked; }); };
+$("tfont").onchange = () => { const c = selText(); if (c) change(() => { c.font = $("tfont").value; }); };
+
+// Colour: Cutline's own small panel, not the browser's colour dialog (which an app
+// window on a tiling desktop can open in the wrong place, or not at all).
+const SWATCHES = ["#ffffff", "#000000", "#f5f5f5", "#9e9e9e", "#ffeb3b", "#ffc107", "#ff9800", "#f44336",
+                  "#e91e63", "#9c27b0", "#3f51b5", "#2196f3", "#00bcd4", "#4caf50", "#8bc34a", "#795548", "#ff6f61", "#7aa2f7"];
+for (const col of SWATCHES) {
+  const b = document.createElement("button"); b.style.background = col; b.dataset.c = col; b.title = col;
+  b.onclick = () => setColor(col); $("swatches").appendChild(b);
+}
+function showColor(col) {
+  $("tcolor").firstElementChild.style.background = col;
+  if (document.activeElement !== $("thex")) $("thex").value = col;
+  for (const b of $("swatches").children) b.classList.toggle("on", b.dataset.c === col.toLowerCase());
+}
+function setColor(col) {
+  const c = selText(); if (!c || !/^#[0-9a-f]{6}$/i.test(col)) return;
+  change(() => { c.color = col.toLowerCase(); }); showColor(c.color);
+}
+$("tcolor").onclick = (e) => { e.stopPropagation(); $("palette").classList.toggle("open"); };
+$("palette").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => $("palette").classList.remove("open"));
+$("thex").oninput = () => { let v = $("thex").value.trim(); if (!v.startsWith("#")) v = "#" + v; if (/^#[0-9a-f]{6}$/i.test(v)) setColor(v); };
+$("thex").onkeydown = (e) => { if (e.key === "Enter" || e.key === "Escape") $("palette").classList.remove("open"); e.stopPropagation(); };
+
+// Fades for a caption's look or a clip's sound, in seconds.
+for (const key of ["fadeIn", "fadeOut"]) {
+  $(key).oninput = () => { const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null; if (!c) return;
+    const v = Math.min(30, Math.max(0, parseFloat($(key).value) || 0)); sliderStart(); c[key] = v; applyGains(); drawCaptions(); draw(); };
+  $(key).onchange = sliderEnd;
+}
 
 let textDrag = null;
 function startTextDrag(e, el) {
@@ -697,6 +759,16 @@ function drawClip(c, x0, y0, alpha) {
       let m = 0; for (let i = i0; i < i1 && i < pk.peaks.length; i++) m = Math.max(m, pk.peaks[i]);
       const hh = Math.max(1, Math.min(1, m * vol(c)) * (WAVE - 4)); ctx.fillRect(x, mid - hh / 2, 1, hh);
     }
+  }
+  // Fades: a shaded ramp at each end, as long as the fade.
+  const fi = Math.min(c.fadeIn || 0, len(c) / 2) * pps, fo = Math.min(c.fadeOut || 0, len(c) / 2) * pps;
+  if (fi > 0 || fo > 0) {
+    ctx.fillStyle = "rgba(0,0,0,.35)"; ctx.strokeStyle = colors.foreground; ctx.lineWidth = 1.5;
+    if (fi > 0) { ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x0 + fi, y0); ctx.lineTo(x0, y0 + h); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x0, y0 + h); ctx.lineTo(x0 + fi, y0); ctx.stroke(); }
+    if (fo > 0) { const x1 = x0 + w; ctx.beginPath(); ctx.moveTo(x1, y0); ctx.lineTo(x1 - fo, y0); ctx.lineTo(x1, y0 + h); ctx.fill();
+      ctx.beginPath(); ctx.moveTo(x1 - fo, y0); ctx.lineTo(x1, y0 + h); ctx.stroke(); }
+    ctx.lineWidth = 1;
   }
   const label = isText(c) ? `T · ${c.text.split("\n")[0] || "(empty text)"}` : (src ? src.name : "offline") + (c.layout === "free" ? " · FREE" : c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
               + (vol(c) !== 1 ? ` · vol ${Math.round(vol(c) * 100)}%` : "");
@@ -1043,6 +1115,8 @@ window.addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));
 async function init() {
   const d = await (await fetch("/api/project")).json();
   P = d.project; applyTheme(d.theme); textFont = d.textFont || textFont;
+  $("tfont").innerHTML = `<option value="">Default (${textFont})</option>`;
+  for (const f of d.fonts || []) { const o = document.createElement("option"); o.value = o.textContent = f; o.style.fontFamily = `"${f}"`; $("tfont").appendChild(o); }
   $("name").textContent = P.name; document.title = `${P.name} — Cutline`;
   $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h} · ${Math.round(P.canvas.fps)} fps`;
   for (const info of Object.values(d.sources)) loadSource(info);

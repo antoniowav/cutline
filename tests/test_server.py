@@ -280,6 +280,45 @@ class CutlineServer(unittest.TestCase):
         self.assertLess(off_grey(during, 0, 0, 40, 40), 8, "the rest of the picture is untouched")
         self.assertLess(off_grey(after, W // 2 - 120, H // 2 - 30, 240, 60), 8, "the text ends with its clip")
 
+    def test_9d_fades_and_fonts(self):
+        self.json("/api/new", {"path": str(self.videos / "gray.mp4")})        # made by test_9c
+        music = self.json("/api/addsource", {"path": str(self.videos / "music.m4a")})   # made by test_9a
+        d = self.json("/api/project")
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": i == 1} for i in (1, 2, 3)]
+        project["clips"] += [
+            {"id": 2, "kind": "text", "src": "", "track": 2, "start": 0, "in": 0, "out": 2, "text": "FADE",
+             "x": 0.5, "y": 0.5, "tsize": 0.2, "color": "#ffffff", "bg": True, "font": "Liberation Serif",
+             "bold": False, "fadeIn": 1, "fadeOut": 0.5},
+            # an unknown font name falls back to the default rather than reaching fontconfig
+            {"id": 3, "kind": "text", "src": "", "track": 2, "start": 2, "in": 0, "out": 0.1, "text": "x",
+             "x": 0.5, "y": 0.5, "tsize": 0.05, "color": "#ffffff", "bg": False, "font": "Nope:weight=1,-x"},
+            {"id": 4, "src": music["id"], "track": 3, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3,
+             "fadeIn": 1},
+        ]
+        self.json("/api/project", project)
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        W, H = 640, 360
+
+        def grey_at(sec):
+            img = subprocess.run(["ffmpeg", "-v", "error", "-ss", str(sec), "-i", state["output"], "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True, check=True).stdout
+            vals = [img[y * W + x] for y in range(H // 2 - 40, H // 2 + 40) for x in range(W // 2 - 120, W // 2 + 120)]
+            return sum(abs(v - 128) for v in vals) / len(vals)
+
+        self.assertLess(grey_at(0.05), 8, "the text starts faded out")
+        self.assertGreater(grey_at(1.2), 25, "and is fully there after its fade-in")
+        self.assertLess(grey_at(1.95), grey_at(1.2) / 2, "and fades out at the end")
+
+        def loudness(start, dur):
+            err = subprocess.run(["ffmpeg", "-ss", str(start), "-t", str(dur), "-i", state["output"],
+                                  "-af", "volumedetect", "-f", "null", "-"], capture_output=True, text=True).stderr
+            return float(re.search(r"mean_volume: (-?[\d.]+) dB", err).group(1))
+
+        self.assertLess(loudness(0, 0.2), loudness(1.2, 0.3) - 10, "the music fades in")
+
     def test_9b_three_portrait_clips_side_by_side(self):
         # Three portrait clips in a landscape canvas, each filling a third, as "Side by side" sets them.
         colours = {"red": (255, 0, 0), "lime": (0, 255, 0), "blue": (0, 0, 255)}

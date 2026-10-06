@@ -14,8 +14,12 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   folder or ~/Music with ＋ Media. They go on a track at the playhead and add sound only.
 - Text: ＋ Text (or T) adds a title or caption at the playhead. Type it, set its size and
   colour, give it a box, drag it in the preview; it's trimmed and moved on the timeline like a clip.
+- Fades: fade text and music in and out (seconds each way); the timeline shows the ramps.
+- Fonts: pick any installed font for text, bold or not.
 
 ### Fixed
+- The text colour now uses Cutline's own colour panel (swatches and a hex field) instead of
+  the browser's dialog, which didn't show properly in the app window.
 - Phone videos filmed in landscape no longer open in a portrait canvas: the
   rotation the phone tags them with is now taken into account.
 

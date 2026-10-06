@@ -224,38 +224,63 @@ MAX_TEXT = 500
 
 def clean_clip(c):
     clip = {"id": int(c["id"]), "track": int(c["track"]),
-            "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6)}
+            "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6),
+            "fadeIn": num(c.get("fadeIn", 0), 0, 30), "fadeOut": num(c.get("fadeOut", 0), 0, 30)}
     if c.get("kind") == "text":
         # Text goes into ffmpeg through a file, never the filter graph, so any characters are fine.
         return {**clip, "kind": "text", "src": "", "text": str(c.get("text", ""))[:MAX_TEXT],
                 "x": num(c.get("x", 0.5), -0.5, 1.5), "y": num(c.get("y", 0.85), -0.5, 1.5),
                 "tsize": num(c.get("tsize", 0.07), 0.01, 0.5),
                 "color": c["color"] if COLOR.fullmatch(str(c.get("color", ""))) else "#ffffff",
-                "bg": bool(c.get("bg", True))}
+                "bg": bool(c.get("bg", True)), "bold": bool(c.get("bold", True)),
+                # only an installed family, so the name can't smuggle anything into fc-match
+                "font": c["font"] if c.get("font") in fonts() else ""}
     return {**clip, "src": str(c["src"]),
             "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
             "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
             "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit"}
 
 
-_text_font = None
+_fonts = None
+_font_files = {}
+# Not for titles: emoji, icon and symbol fonts, and the regional copies of the CJK fonts.
+NOT_TEXT_FONTS = re.compile(r"emoji|awesome|symbol|icons?\b|music|dingbat|cursor|math|CJK|D050000L", re.I)
+
+
+def fonts():
+    """Installed font families that can write English, for the text tools. Sorted."""
+    global _fonts
+    if _fonts is None:
+        try:
+            out = subprocess.run(["fc-list", ":lang=en", "family"], capture_output=True, text=True, timeout=10).stdout
+            names = {line.split(",")[0].strip() for line in out.splitlines()}
+            _fonts = sorted((n for n in names if n and not NOT_TEXT_FONTS.search(n)), key=str.lower)
+        except (OSError, subprocess.TimeoutExpired):
+            _fonts = []
+    return _fonts
+
+
+def font_file(family="", bold=True):
+    """The font file fontconfig picks for a family (the default sans-serif when empty)."""
+    key = (family, bold)
+    if key not in _font_files:
+        # fontconfig patterns treat \ - : , specially; escape them in the family name
+        name = re.sub(r"([\\\-:,])", r"\\\1", family) if family else "sans-serif"
+        _font_files[key] = None
+        try:
+            out = subprocess.run(["fc-match", f"{name}:{'bold' if bold else 'regular'}", "--format", "%{family[0]}|%{file}"],
+                                 capture_output=True, text=True, timeout=5).stdout
+            found, file = out.split("|", 1)
+            if found and Path(file).is_file() and "'" not in file:
+                _font_files[key] = {"family": found, "file": file}
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            pass
+    return _font_files[key]
 
 
 def text_font():
-    """The font titles and captions are drawn with, in the preview and the export: the
-    desktop's bold sans-serif. {"family", "file"}, or None without fontconfig."""
-    global _text_font
-    if _text_font is None:
-        _text_font = {}
-        try:
-            out = subprocess.run(["fc-match", "sans-serif:bold", "--format", "%{family[0]}|%{file}"],
-                                 capture_output=True, text=True, timeout=5).stdout
-            family, file = out.split("|", 1)
-            if family and Path(file).is_file() and "'" not in file:
-                _text_font = {"family": family, "file": file}
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            pass
-    return _text_font or None
+    """The default text font: the desktop's bold sans-serif. {"family", "file"} or None."""
+    return font_file("", True)
 
 
 def clean_project(p):
@@ -623,9 +648,6 @@ class App:
         # Titles and captions on top of everything, in track order. The text reaches ffmpeg
         # through a file (textfile, expansion=none), so nothing typed can change the graph.
         if texts:
-            font = text_font()
-            if not font:
-                raise ValueError("Can't draw text: no font found (fontconfig's fc-match is missing)")
             folder = CACHE / "text"
             folder.mkdir(parents=True, exist_ok=True)
             for stale in folder.glob("*.txt"):           # the last export's
@@ -638,11 +660,19 @@ class App:
                 file.write_text(c["text"])
                 st = frames(c["start"]) / FPS
                 en = (frames(c["start"]) + max(1, frames(c["out"] - c["in"]))) / FPS
+                font = font_file(c["font"], c["bold"])
+                if not font:
+                    raise ValueError("Can't draw text: no font found (fontconfig's fc-match is missing)")
                 size = max(4, round(H * c["tsize"]))
+                # fade: the alpha rises over fadeIn seconds and falls over fadeOut (box included)
+                fi, fo = min(c["fadeIn"], (en - st) / 2), min(c["fadeOut"], (en - st) / 2)
+                ramp = [f"clip((t-{st:.4f})/{fi:.4f},0,1)" if fi > 0 else "1",
+                        f"clip(({en:.4f}-t)/{fo:.4f},0,1)" if fo > 0 else "1"]
+                alpha = f":alpha='min({ramp[0]},{ramp[1]})'" if fi > 0 or fo > 0 else ""
                 bg = f":box=1:boxcolor=black@0.55:boxborderw={max(2, round(size * 0.3))}" if c["bg"] else ""
                 graph.append(f"[b{layer}]drawtext=fontfile='{font['file']}':textfile='{file}':expansion=none:"
                              f"fontsize={size}:fontcolor=0x{c['color'][1:]}:text_align=C:"
-                             f"x=W*{c['x']:.4f}-text_w/2:y=H*{c['y']:.4f}-text_h/2{bg}:"
+                             f"x=W*{c['x']:.4f}-text_w/2:y=H*{c['y']:.4f}-text_h/2{bg}{alpha}:"
                              f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
                 layer += 1
         graph.append(f"[b{layer}]" + ("scale=-2:1080," if scale1080 and H > 1080 else "")
@@ -654,14 +684,15 @@ class App:
             if tracks[c["track"]].get("muted") or gain <= 0 or not self.sources[c["src"]].info["audio"]:
                 continue
             d = nf[id(c)] / FPS
-            fade = min(0.02, d / 4)
+            fade = min(0.02, d / 4)                     # always a tiny fade: no clicks at the cuts
+            fin, fout = max(fade, min(c.get("fadeIn", 0), d / 2)), max(fade, min(c.get("fadeOut", 0), d / 2))
             ms = int(round(sf[id(c)] / FPS * 1000))
             # mono: copy to both sides at full level (a plain upmix would drop it by 3 dB)
             to_stereo = "pan=stereo|c0=c0|c1=c0" if self.sources[c["src"]].info.get("channels") == 1 \
                 else "aformat=channel_layouts=stereo"
             graph.append(f"[{k}:a:0]aresample=48000,{to_stereo},asetpts=PTS-STARTPTS,"
                          f"apad=whole_dur={d:.4f},atrim=duration={d:.4f},"
-                         f"volume={gain:.3f},afade=t=in:d={fade:.3f},afade=t=out:st={max(0, d - fade):.4f}:d={fade:.3f},"
+                         f"volume={gain:.3f},afade=t=in:d={fin:.3f},afade=t=out:st={max(0, d - fout):.4f}:d={fout:.3f},"
                          f"adelay={ms}|{ms}[a{k}]")
             audio.append(f"[a{k}]")
         graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total:.4f}[asil]")
@@ -881,6 +912,7 @@ def handler_for(app: App):
                     return self.send_json({"error": "no project open"}, 404)
                 return self.send_json({"project": app.load(), "theme": theme(),
                                        "textFont": (text_font() or {}).get("family", "sans-serif"),
+                                       "fonts": fonts(),
                                        "sources": {sid: s.public() for sid, s in app.sources.items()},
                                        "export": app.export})
             self.send_json({"error": "not found"}, 404)
