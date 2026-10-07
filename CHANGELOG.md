@@ -5,6 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-07
+
+### Added
+- Pictures: photos and stickers (PNG, JPG, WebP) and animated GIFs and WebPs. Stickers keep
+  their see-through parts in the preview and the export, and GIFs loop for as long as their
+  clip. A picture added at the playhead goes in the middle, in its own shape; added to the
+  end of V1 it fills the screen, like a slideshow. ~/Pictures is in the picker too.
+- GIFs & SFX: buttons that open GIPHY (GIFs, stickers) or Pixabay (sound effects) in your
+  browser. Cutline never talks to those sites: what you download shows up in the drawer,
+  newest first, and a click adds it at the playhead.
+- Drop files from the file manager onto the window, or drag a GIF or a sound straight from
+  a web page: it's kept in Videos/Cutline media and added at the playhead. Fetching only
+  reaches the internet, never this computer or the local network.
+
+### Changed
+- The header's ＋ Track button is gone (the timeline has its own), and the canvas size shows
+  without the frame rate (hover for it), so the header fits on one line again.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added
@@ -102,7 +120,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/antoniowav/cutline/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/antoniowav/cutline/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/antoniowav/cutline/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoniowav/cutline/compare/v0.1.1...v0.2.0

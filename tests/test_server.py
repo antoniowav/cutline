@@ -44,6 +44,8 @@ class CutlineServer(unittest.TestCase):
         tmp = Path(cls.tmp.name)
         cls.videos = tmp / "Videos"
         cls.videos.mkdir()
+        cls.downloads = tmp / "Downloads"
+        cls.downloads.mkdir()
         tone = ["-f", "lavfi", "-i"]
         ffmpeg(*tone, f"testsrc2=s=640x360:r={FPS}:d=4", *tone, "sine=f=440:d=4",
                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(cls.videos / "sdr.mp4"))
@@ -65,6 +67,7 @@ class CutlineServer(unittest.TestCase):
         (bin_dir / "cuore").chmod(0o755)
         env = {**os.environ, "XDG_DATA_HOME": str(tmp / "data"), "XDG_CACHE_HOME": str(tmp / "cache"),
                "CUTLINE_VIDEOS": str(cls.videos), "CUTLINE_NO_BROWSER": "1", "PYTHONDONTWRITEBYTECODE": "1",
+               "CUTLINE_DOWNLOADS": str(tmp / "Downloads"), "CUTLINE_PICTURES": str(tmp / "Pictures"),
                "HOME": str(home), "PATH": f"{bin_dir}:{os.environ['PATH']}"}
         cls.server = subprocess.Popen([sys.executable, str(ROOT / "cutline")], env=env,
                                       stdout=subprocess.PIPE, text=True)
@@ -541,6 +544,77 @@ class CutlineServer(unittest.TestCase):
         self.assertTrue(all(abs(c - w) < 70 for c, w in zip(pixel(58, H // 2), (0, 0, 255), strict=True)),
                         "a left-aligned title starts at its spot (its box padding just left of x=64)")
         self.assertTrue(all(abs(c - 128) < 40 for c in pixel(30, H // 2)), "and nothing to its left")
+
+    def test_9i_pictures_stickers_and_gifs(self):
+        # A sticker: transparent, with a yellow box in the middle. Dropped on the window (uploaded).
+        sticker = self.downloads / "sticker.png"
+        ffmpeg("-f", "lavfi", "-i", "color=c=black@0:s=200x100,format=rgba,drawbox=x=50:y=25:w=100:h=50:color=yellow@1:t=fill:replace=1",
+               "-frames:v", "1", str(sticker))
+        # An animated GIF of 1.5 s: lime then blue.
+        gif = self.downloads / "flash.gif"
+        ffmpeg("-f", "lavfi", "-i", "color=c=lime:s=160x120:r=10:d=0.75", "-f", "lavfi", "-i",
+               "color=c=blue:s=160x120:r=10:d=0.75", "-filter_complex", "[0][1]concat=n=2:v=1", str(gif))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=4", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(self.videos / "redbg.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "redbg.mp4")})
+
+        drawer = self.json("/api/drawer")["files"]
+        self.assertEqual({f["name"]: f["kind"] for f in drawer}, {"sticker.png": "image", "flash.gif": "gif"})
+        status, data = self.call(f"/api/thumb?path={sticker}")
+        self.assertEqual((status, data[:4]), (200, b"\x89PNG"), "the drawer shows the sticker")
+        self.assertEqual(self.call("/api/thumb?path=/etc/passwd")[0], 404, "and nothing outside its folders")
+
+        status, data = self.call("/api/upload?name=sticker.png", raw=sticker.read_bytes())
+        self.assertEqual(status, 200, data)
+        up = json.loads(data)
+        self.assertTrue(up["image"] and up["still"] and up["alpha"], up)
+        self.assertEqual(Path(up["path"]).parent, self.videos / "Cutline media", "kept in the media folder")
+        anim = self.json("/api/addsource", {"path": str(gif)})
+        self.assertTrue(anim["loop"] and not anim["still"])
+        self.assertAlmostEqual(anim["duration"], 1.5, delta=0.11)
+        deadline = time.time() + 60
+        while not all(self.json(f"/api/source/{s['id']}")["proxyReady"] for s in (up, anim)):
+            self.assertLess(time.time(), deadline, "the pictures' preview copies never finished")
+            time.sleep(0.5)
+
+        status, data = self.call("/api/fetch", {"url": "http://127.0.0.1:1/x.gif"})
+        self.assertEqual(status, 400)
+        self.assertIn("internet", json.loads(data)["error"], "never fetches from this computer")
+        self.assertEqual(self.call("/api/openweb", {"site": "evil"})[0], 400)
+        status, data = self.call("/api/new", {"path": str(sticker)})
+        self.assertEqual(status, 400, "a project starts from a video")
+
+        d = self.json("/api/project")
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2, 3)]
+        bg = next(sid for sid, s in d["sources"].items() if s["name"] == "redbg.mp4")
+        project["clips"] = [
+            {"id": 1, "src": bg, "track": 1, "start": 0, "in": 0, "out": 4, "layout": "full", "size": 0.3},
+            # the sticker over the left half, the GIF looping for 3 s in the top right corner
+            {"id": 2, "src": up["id"], "track": 2, "start": 0, "in": 0, "out": 4, "layout": "free", "size": 0.3,
+             "box": {"x": 0, "y": 0.25, "w": 0.5, "h": 0.5}},
+            {"id": 3, "src": anim["id"], "track": 3, "start": 0, "in": 0, "out": 3, "layout": "tr", "size": 0.3}]
+        self.json("/api/project", project)
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        info = probe(state["output"])
+        self.assertEqual(int(next(s for s in info["streams"] if s["codec_type"] == "video")["nb_read_frames"]), 4 * FPS)
+        W = 640
+
+        def pixel(t, x, y):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return rgb[(y * W + x) * 3:(y * W + x) * 3 + 3]
+
+        near = lambda got, want: all(abs(g - w) < 70 for g, w in zip(got, want, strict=True))
+        self.assertTrue(near(pixel(1, 160, 180), (255, 255, 0)), "the sticker's yellow box shows")
+        self.assertTrue(near(pixel(1, 20, 110), (255, 0, 0)), "and the video shows through its clear part")
+        corner = (W - 40, 40)                         # inside the GIF in the top right corner
+        self.assertTrue(near(pixel(0.3, *corner), (0, 255, 0)), "the GIF starts lime")
+        self.assertTrue(near(pixel(1.1, *corner), (0, 0, 255)), "then turns blue")
+        self.assertTrue(near(pixel(1.8, *corner), (0, 255, 0)), "and loops back to lime")
+        self.assertTrue(near(pixel(3.5, *corner), (255, 0, 0)), "and is gone after its 3 seconds")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

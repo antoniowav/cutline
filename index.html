@@ -69,6 +69,20 @@
   .sw { width:26px; height:22px; padding:3px; }
   .sw i { display:block; width:100%; height:100%; border-radius:2px; border:1px solid var(--muted); }
   #tplSel { max-width:110px; }
+  #drawer { position:fixed; top:46px; right:0; bottom:0; width:min(340px, 92vw); z-index:15; background:var(--bg);
+    border-left:1px solid var(--accent); display:none; flex-direction:column; }
+  #drawer.open { display:flex; }
+  #drawer .head { padding:10px 12px; border-bottom:1px solid var(--bg3); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #drawer ul { list-style:none; margin:0; padding:0; overflow:auto; flex:1; }
+  #drawer li { display:flex; gap:10px; align-items:center; padding:7px 12px; border-bottom:1px solid var(--bg3); cursor:pointer; }
+  #drawer li:hover { background:var(--bg3); }
+  #drawer li .pic { width:56px; height:40px; flex:none; display:flex; align-items:center; justify-content:center;
+    background:repeating-conic-gradient(#3335 0 25%, #6665 0 50%) 0 0/12px 12px; color:var(--accent); font-size:18px; }
+  #drawer li .pic img { max-width:100%; max-height:100%; }
+  #drawer li .n { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  #drawer li .new { color:var(--bg); background:var(--accent); border-radius:3px; padding:0 5px; font-size:11px; }
+  #dropHint { position:fixed; inset:0; z-index:30; display:none; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.55); border:3px dashed var(--accent); color:var(--accent); font-size:20px; pointer-events:none; }
   #cropPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; }
   #cropPanel.open { display:flex; }
@@ -115,7 +129,7 @@
   <select id="tplSel" title="Add a ready-made title at the playhead">
     <option value="">＋ Title</option><option value="title">Big title</option><option value="lower">Lower third</option>
     <option value="subscribe">Subscribe</option><option value="chapter">Chapter</option></select>
-  <button id="trackBtn" title="Add a track on top">＋ Track</button>
+  <button id="drawerBtn" title="GIFs, stickers and sound effects: find them in your browser, they show up here">GIFs &amp; SFX</button>
   <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option>
     <option value="small" title="720p, a smaller file">Small file</option><option value="gif" title="480p, 15 fps, no sound">GIF</option></select>
   <label class="muted" title="Make the export as loud as YouTube, TikTok and Spotify play it (-14 LUFS), so it's not too quiet or too loud"><input id="loud" type="checkbox"> Loudness</label>
@@ -202,6 +216,15 @@
     <button id="pickClose">Close</button></div>
   <ul id="pickList"></ul>
 </div></div>
+<div id="drawer"><div class="head"><b>GIFs &amp; SFX</b><span class="spacer"></span><button id="drawerClose">Close</button>
+  <span style="flex-basis:100%"></span>
+  <button id="gifBtn" title="Opens GIPHY in your browser">Find GIFs</button>
+  <button id="stickerBtn" title="Opens GIPHY stickers (see-through) in your browser">Stickers</button>
+  <button id="sfxBtn" title="Opens Pixabay's free sound effects in your browser">Sounds</button>
+  <span style="flex-basis:100%"></span><span class="muted">In</span><span class="muted" id="drawerDir"></span>
+  <span class="muted" style="white-space:normal">Download a GIF or sound, or drag one from a web page onto Cutline: it shows up here. Click to add it at the playhead.</span></div>
+  <ul id="drawerList"></ul></div>
+<div id="dropHint">Drop to add at the playhead</div>
 <div id="toast"></div>
 
 <script>
@@ -229,6 +252,7 @@ const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
 const isAudio = c => c.audioOnly || S[c.src]?.video === false;   // music, a voiceover or detached sound: sound only
 const NO_CROP = { l: 0, t: 0, r: 0, b: 0 };
 const isText = c => c.kind === "text";             // a title or caption, drawn over everything
+const anyLength = c => isText(c) || !!S[c.src]?.loop;  // titles, photos and GIFs can be stretched as long as you like
 // How far a clip has faded in or out at time x: 0..1, as the export ramps it.
 function fadeAt(c, x) {
   const d = len(c), fi = Math.min(c.fadeIn || 0, d / 2), fo = Math.min(c.fadeOut || 0, d / 2), a = x - c.start;
@@ -379,10 +403,11 @@ function sync(force) {
   applyGains();
   for (const tr of P.tracks) {
     const v = vids[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
-    if (!c || !S[c.src]) { if (!v.paused) v.pause(); v.style.display = "none"; continue; }
+    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { if (!v.paused) v.pause(); v.style.display = "none"; continue; }
     const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
     if (v.dataset.media !== media) { v.src = `/media/${c.src}?${media}`; v.dataset.media = media; v._pending = null; force = true; }
-    const want = c.in + (t - c.start);
+    const loop = S[c.src].loop, want = loop ? (c.in + (t - c.start)) % Math.max(0.01, S[c.src].duration) : c.in + (t - c.start);
+    v.loop = !!loop;
     v.muted = actx ? false : tr.muted; v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
     if (playing) {
       if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
@@ -637,7 +662,8 @@ function aspectOf() {
   return Object.keys(RATIOS).find(k => Math.abs(P.canvas.w / P.canvas.h - RATIOS[k][0] / RATIOS[k][1]) < 0.01) || "orig";
 }
 function showCanvas() {
-  $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h} · ${Math.round(P.canvas.fps)} fps`;
+  $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h}`;
+  $("canvasInfo").title = `${P.canvas.w}×${P.canvas.h} pixels, ${Math.round(P.canvas.fps)} frames a second`;
   $("aspect").value = aspectOf();
 }
 $("aspect").onchange = () => {
@@ -1201,13 +1227,13 @@ window.addEventListener("mousemove", e => {
     const c = drag.trimClip, { prevEnd, nextStart } = neighbours(c), src = S[c.src];
     const at = snapTime(T(x), c.id);
     if (drag.trim === "end") {
-      const maxEnd = Math.min(nextStart, isText(c) ? Infinity : c.start + ((src?.duration ?? c.out) - c.in));
+      const maxEnd = Math.min(nextStart, anyLength(c) ? Infinity : c.start + ((src?.duration ?? c.out) - c.in));
       const newEnd = Math.min(Math.max(at, c.start + frame()), maxEnd);
       c.out = c.in + (newEnd - c.start); t = newEnd - 1e-3;
     } else {
-      const minStart = Math.max(prevEnd, isText(c) ? 0 : c.start - c.in);
+      const minStart = Math.max(prevEnd, anyLength(c) ? 0 : c.start - c.in);
       const newStart = Math.min(Math.max(at, minStart), end(c) - frame());
-      if (isText(c)) { c.out = end(c) - newStart; c.in = 0; } else c.in += newStart - c.start;   // text keeps its end
+      if (anyLength(c)) { c.out = end(c) - newStart; c.in = 0; } else c.in += newStart - c.start;   // text and pictures keep their end
       c.start = newStart; t = newStart;
     }
     if (x > canvas.clientWidth - 30) scrollX += 10;
@@ -1326,11 +1352,11 @@ async function openPicker() {
 }
 function renderPicker() {
   const ul = $("pickList"); ul.innerHTML = "";
-  if (!pickItems.length) { ul.innerHTML = `<li class="muted"></li>`; ul.firstChild.textContent = `No videos or audio found in ${pickDir} or ~/Music`; return; }
+  if (!pickItems.length) { ul.innerHTML = `<li class="muted"></li>`; ul.firstChild.textContent = `No videos, audio or pictures found in ${pickDir}, ~/Music or ~/Pictures`; return; }
   pickItems.forEach((v, i) => {
     const li = document.createElement("li"); if (i === pickActive) li.className = "active";
     li.innerHTML = `<span class="n"></span><span class="muted"></span>`;
-    li.children[0].textContent = (v.audio ? "♪ " : "") + v.name; li.children[1].textContent = v.modified;
+    li.children[0].textContent = (v.audio ? "♪ " : v.image ? "▣ " : "") + v.name; li.children[1].textContent = v.modified;
     li.onclick = () => addVideo(v.path); ul.appendChild(li);
   });
 }
@@ -1346,28 +1372,111 @@ function closePicker() { $("picker").style.display = "none"; }
 async function addVideo(path) {
   const r = await (await fetch("/api/addsource", { method: "POST", body: JSON.stringify({ path }) })).json();
   if (r.error) return toast(r.error);
-  closePicker(); loadSource(r);
-  const mode = $("placeMode").value;
+  closePicker(); addSource(r, $("placeMode").value);
+}
+// Put a source on the timeline. "append": videos and pictures at the end of V1 (a picture full
+// screen, like a slideshow); "overlay": on a free track at the playhead (a picture as a sticker
+// in the middle, a video in the corner, sound on its own track).
+function addSource(r, mode) {
+  loadSource(r);
+  const picture = !!r.image, length = r.still ? 5 : r.loop ? Math.max(r.duration, 3) : r.duration;
   change(() => {
     if (!P.sources.some(s => s.id === r.id)) P.sources.push({ id: r.id, path: r.path });
-    const c = { id: nextId(), src: r.id, in: 0, out: r.duration, layout: "full", size: 0.3 };
+    const c = { id: nextId(), src: r.id, in: 0, out: length, layout: "full", size: 0.3 };
     if (mode === "append" && r.video !== false) {
       c.track = P.tracks[0].id;
       c.start = P.clips.filter(x => x.track === c.track).reduce((a, x) => Math.max(a, end(x)), 0);
     } else {
-      let tr = P.tracks.slice(1).find(tr => freeStart(tr.id, t, len(c)) - t < 1e-6);
-      if (!tr) { tr = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: `${r.video === false ? "A" : "V"}${P.tracks.length + 1}`, hidden: false, muted: false }; P.tracks.push(tr); }
+      const tr = roomyTrack(t, len(c), 1, r.video === false ? "A" : "V");
       c.track = tr.id; c.start = t;
-      if (r.video !== false) c.layout = "br";      // music and voiceovers go on a track at the playhead
+      if (picture) {                       // a sticker: a third of the width, in the middle, its own shape
+        const w = 0.3, h = Math.min(0.9, w * (r.height / Math.max(1, r.width)) * (P.canvas.w / P.canvas.h));
+        Object.assign(c, { layout: "free", box: { x: (1 - w) / 2, y: (1 - h) / 2, w, h } });
+      } else if (r.video !== false) c.layout = "br";      // music and voiceovers go on a track at the playhead
     }
     P.clips.push(c); selected = new Set([c.id]);
   });
   resizeTimeline(); toast(`Added ${r.name}`);
 }
+
+// ---------- the media drawer: GIFs, stickers and sounds from the web, without any web service ----------
+// The GIFs and SFX buttons open a site in the browser. Whatever you download there (or drag from
+// it onto Cutline) shows up in the drawer, newest first; a click adds it at the playhead.
+let drawerTimer = null, drawerSince = 0;
+async function refreshDrawer() {
+  const d = await (await fetch("/api/drawer")).json();
+  $("drawerDir").textContent = d.downloads;
+  const ul = $("drawerList"); ul.innerHTML = "";
+  if (!d.files.length) { ul.innerHTML = `<li class="muted">Nothing yet</li>`; return; }
+  for (const f of d.files) {
+    const li = document.createElement("li");
+    li.innerHTML = `<span class="pic"></span><span class="n"></span>`;
+    if (f.kind === "image" || f.kind === "gif") {
+      const img = document.createElement("img"); img.loading = "lazy"; img.src = `/api/thumb?path=${encodeURIComponent(f.path)}`;
+      li.firstChild.appendChild(img);
+    } else li.firstChild.textContent = f.kind === "audio" ? "♪" : "▶";
+    li.children[1].textContent = f.name; li.title = `${f.where}/${f.name}`;
+    if (f.mtime * 1000 > drawerSince) { const n = document.createElement("span"); n.className = "new"; n.textContent = "new"; li.appendChild(n); }
+    li.onclick = async () => {
+      const r = await (await fetch("/api/addsource", { method: "POST", body: JSON.stringify({ path: f.path }) })).json();
+      if (r.error) return toast(r.error);
+      addSource(r, "overlay");
+    };
+    ul.appendChild(li);
+  }
+}
+function openDrawer() {
+  if (!$("drawer").classList.contains("open")) drawerSince = Date.now();
+  $("drawer").classList.add("open"); refreshDrawer();
+  clearInterval(drawerTimer); drawerTimer = setInterval(refreshDrawer, 2000);
+}
+function closeDrawer() { $("drawer").classList.remove("open"); clearInterval(drawerTimer); }
+async function openWeb(site) {
+  const r = await (await fetch("/api/openweb", { method: "POST", body: JSON.stringify({ site }) })).json();
+  if (r.error) return toast(r.error);
+  openDrawer(); toast("Opened in your browser: download what you like, or drag it onto Cutline", 4000);
+}
+$("gifBtn").onclick = () => openWeb("gifs");
+$("stickerBtn").onclick = () => openWeb("stickers");
+$("sfxBtn").onclick = () => openWeb("sfx");
+$("drawerBtn").onclick = () => $("drawer").classList.contains("open") ? closeDrawer() : openDrawer();
+$("drawerClose").onclick = closeDrawer;
+
+// Dropping: files from the file manager are uploaded (a page never sees their path); a GIF or
+// sound dragged from a web page arrives as its address, and Cutline fetches that one file.
+let dragDepth = 0;
+const dragsMedia = e => [...(e.dataTransfer?.types || [])].some(x => x === "Files" || x === "text/uri-list" || x === "text/html");
+window.addEventListener("dragenter", e => { if (!dragsMedia(e)) return; dragDepth++; $("dropHint").style.display = "flex"; });
+window.addEventListener("dragleave", () => { if (--dragDepth <= 0) { dragDepth = 0; $("dropHint").style.display = "none"; } });
+window.addEventListener("dragover", e => { if (dragsMedia(e)) e.preventDefault(); });
+window.addEventListener("drop", async e => {
+  if (!dragsMedia(e)) return;
+  e.preventDefault(); dragDepth = 0; $("dropHint").style.display = "none";
+  const dt = e.dataTransfer, files = [...dt.files];
+  const added = [];
+  if (files.length) {
+    for (const file of files) {
+      toast(`Adding ${file.name}…`, 60000);
+      const r = await (await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file })).json();
+      if (r.error) { toast(r.error, 5000); continue; }
+      added.push(r);
+    }
+  } else {
+    // a picture dragged from a page carries its own address in the HTML; a link carries the page's
+    const html = dt.getData("text/html"), src = html && new DOMParser().parseFromString(html, "text/html").querySelector("img, video, source, audio")?.getAttribute("src");
+    const url = src || dt.getData("text/uri-list").split("\n").find(l => l && !l.startsWith("#"));
+    if (!url) return toast("Nothing to add there");
+    toast("Fetching it…", 60000);
+    const r = await (await fetch("/api/fetch", { method: "POST", body: JSON.stringify({ url: url.trim() }) })).json();
+    if (r.error) return toast(r.error, 6000);
+    added.push(r);
+  }
+  for (const r of added) addSource(r, "overlay");
+  if ($("drawer").classList.contains("open")) refreshDrawer();
+});
 $("addBtn").onclick = openPicker;
 $("pickClose").onclick = closePicker;
 $("picker").onclick = e => { if (e.target.id === "picker") closePicker(); };
-$("trackBtn").onclick = addTrack;
 
 // ---------- export ----------
 let polling = null;

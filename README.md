@@ -35,6 +35,8 @@ original files.
   columns, so three phone videos fill one landscape frame.
 - **Music and voiceovers**: add audio files (MP3, M4A, WAV, FLAC, …) from your videos folder or
   `~/Music`; they get their own track with a waveform and their own volume.
+- **Pictures, stickers and GIFs**: PNG, JPG, WebP and animated GIF/WebP; see-through stickers stay see-through, GIFs loop.
+- **GIFs & SFX**: open GIPHY or Pixabay in your browser; whatever you download or drag onto Cutline shows up in its drawer. Drop files from the file manager onto the window too.
 - **Text**: titles and captions (＋ Text or **T**), with any installed font, bold or not, size, colour
   and a background box; drag
   them in the preview. The export draws them with the same font, so they look as they do here.
