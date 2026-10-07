@@ -497,6 +497,50 @@ class CutlineServer(unittest.TestCase):
                                 capture_output=True, text=True).stderr
         lufs = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", report)[-1])
         self.assertAlmostEqual(lufs, -14, delta=1.5, msg=f"integrated loudness {lufs} LUFS")
+    def test_9h_text_looks_and_typewriter(self):
+        ffmpeg("-f", "lavfi", "-i", f"color=c=gray:s=640x360:r={FPS}:d=4",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(self.videos / "plain.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "plain.mp4")})
+        d = self.json("/api/project")
+        project = d["project"]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2, 3, 4)]
+        text = {"kind": "text", "src": "", "in": 0, "x": 0.5, "tsize": 0.2, "color": "#ffffff", "bg": False}
+        project["clips"] = [project["clips"][0],
+            {**text, "id": 2, "track": 2, "start": 0, "out": 4, "y": 0.2, "text": "MMMM", "outline": 0.15, "outlineColor": "#ff0000"},
+            {**text, "id": 3, "track": 3, "start": 0, "out": 4, "y": 0.8, "text": "GLOW", "color": "#000000",
+             "glow": 1, "glowColor": "#00ff00"},
+            {**text, "id": 4, "track": 4, "start": 0, "out": 3, "y": 0.5, "tsize": 0.12, "text": "ABCDEFGHIJ",
+             "animIn": "type", "fadeIn": 2},
+            {**text, "id": 5, "track": 4, "start": 3, "out": 1, "y": 0.5, "tsize": 0.1, "text": "left", "x": 0.1,
+             "align": "L", "bg": True, "boxColor": "#0000ff", "boxOpacity": 1, "fadeIn": 0, "animIn": "none"}]
+        self.json("/api/project", project)
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        W, H = 640, 360
+
+        def frame(t):
+            return subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1",
+                                   "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+
+        def count(rgb, rows, want):
+            px = (rgb[(y * W + x) * 3:(y * W + x) * 3 + 3] for y in range(*rows) for x in range(W))
+            return sum(all(abs(c - w) < 70 for c, w in zip(p, want, strict=True)) for p in px)
+
+        late = frame(2.5)
+        self.assertGreater(count(late, (0, H // 3), (255, 0, 0)), 400, "a red outline round the top text")
+        self.assertGreater(count(late, (2 * H // 3, H), (0, 255, 0)), 400, "a green glow round the bottom text")
+        typed_early, typed_late = count(frame(0.3), (H // 3, 2 * H // 3), (255, 255, 255)), \
+            count(late, (H // 3, 2 * H // 3), (255, 255, 255))
+        self.assertGreater(typed_late, 2 * typed_early, f"the typewriter shows more later ({typed_early} → {typed_late})")
+        self.assertGreater(typed_early, 0, "and something from the start")
+        boxed = frame(3.5)
+
+        def pixel(x, y):
+            return boxed[(y * W + x) * 3:(y * W + x) * 3 + 3]
+
+        self.assertTrue(all(abs(c - w) < 70 for c, w in zip(pixel(58, H // 2), (0, 0, 255), strict=True)),
+                        "a left-aligned title starts at its spot (its box padding just left of x=64)")
+        self.assertTrue(all(abs(c - 128) < 40 for c in pixel(30, H // 2)), "and nothing to its left")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

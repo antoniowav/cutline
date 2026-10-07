@@ -40,7 +40,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -263,6 +263,48 @@ COLOR = re.compile(r"#[0-9a-fA-F]{6}")
 MAX_TEXT = 500
 
 
+ANIM_IN = ("none", "fade", "pop", "slide", "type", "bounce")
+ANIM_OUT = ("none", "fade", "pop", "slide")
+
+
+def colour(value, default):
+    return str(value).lower() if COLOR.fullmatch(str(value or "")) else default
+
+
+def text_motion(c, st, en):
+    """A title's animation as ffmpeg expressions over t: (alpha, scale, rise), where rise is a
+    share of the canvas height. The editor's textMotion() computes the very same numbers."""
+    d = en - st
+    di, do = min(c["fadeIn"], d / 2), min(c["fadeOut"], d / 2)
+    p = f"clip((t-{st:.4f})/{di:.4f},0,1)"
+    q = f"clip(({en:.4f}-t)/{do:.4f},0,1)"
+    alpha, scale, rise = [], [], []
+    if di > 0:
+        if c["animIn"] in ("fade", "slide"):
+            alpha.append(p)
+        if c["animIn"] == "pop":                       # overshoots a little, then settles (ease-out-back)
+            alpha.append(f"min(1,3*{p})")
+            scale.append(f"(1+2.70158*pow({p}-1,3)+1.70158*pow({p}-1,2))")
+        if c["animIn"] == "bounce":                    # wobbles in size as it settles
+            alpha.append(f"min(1,4*{p})")
+            scale.append(f"(1+0.25*sin({p}*PI*3)*(1-{p}))")
+        if c["animIn"] == "slide":                     # rises into place from a little below
+            rise.append(f"(1-{p})*0.08")
+    if do > 0:
+        if c["animOut"] in ("fade", "slide", "pop"):
+            alpha.append(q)
+        if c["animOut"] == "pop":
+            scale.append(f"(0.6+0.4*{q})")
+        if c["animOut"] == "slide":
+            rise.append(f"(1-{q})*0.08")
+    return "*".join(alpha) or "1", "*".join(scale) or "1", "+".join(rise) or "0"
+
+
+def typing_units(text):
+    """What a typewriter shows one at a time: characters, or words for a long text."""
+    return list(text) if len(text) <= 80 else re.findall(r"\S+\s*|\s+", text)
+
+
 def clean_clip(c):
     clip = {"id": int(c["id"]), "track": int(c["track"]),
             "start": num(c["start"], 0, 1e6), "in": num(c["in"], 0, 1e6), "out": num(c["out"], 0, 1e6),
@@ -275,7 +317,16 @@ def clean_clip(c):
                 "color": c["color"] if COLOR.fullmatch(str(c.get("color", ""))) else "#ffffff",
                 "bg": bool(c.get("bg", True)), "bold": bool(c.get("bold", True)),
                 # only an installed family, so the name can't smuggle anything into fc-match
-                "font": c["font"] if c.get("font") in fonts() else ""}
+                "font": c["font"] if c.get("font") in fonts() else "",
+                # the look: an outline, a shadow and a glow (shares of the font size), the box's colour
+                "outline": num(c.get("outline", 0), 0, 0.25), "outlineColor": colour(c.get("outlineColor"), "#000000"),
+                "shadow": num(c.get("shadow", 0), 0, 0.25), "shadowColor": colour(c.get("shadowColor"), "#000000"),
+                "glow": num(c.get("glow", 0), 0, 1), "glowColor": colour(c.get("glowColor"), "#ffffff"),
+                "boxColor": colour(c.get("boxColor"), "#000000"), "boxOpacity": num(c.get("boxOpacity", 0.55), 0, 1),
+                "align": c["align"] if c.get("align") in ("L", "C", "R") else "C",
+                # how it comes in and goes out, over fadeIn and fadeOut seconds
+                "animIn": c["animIn"] if c.get("animIn") in ANIM_IN else "fade",
+                "animOut": c["animOut"] if c.get("animOut") in ANIM_OUT else "fade"}
     return {**clip, "src": str(c["src"]),
             "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
             "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
@@ -750,24 +801,62 @@ class App:
                 layer += 1
             # Titles and captions on top of everything, in track order. The text reaches ffmpeg
             # through a file (textfile, expansion=none), so nothing typed can change the graph.
+            def drawtexts(c, files, font, st, en, h, glow=False):
+                """drawtext filters for one title on a frame h pixels high, from st to en seconds.
+                A typewriter is one drawtext per step, each with a longer start of the text."""
+                size = h * c["tsize"]
+                alpha, scale, rise = text_motion(c, st, en)
+                x = {"L": f"w*{c['x']:.4f}", "C": f"w*{c['x']:.4f}-text_w/2", "R": f"w*{c['x']:.4f}-text_w"}[c["align"]]
+                look = (f"fontfile='{font}':expansion=none:fontsize='max(1,{c['tsize']:.4f}*h*{scale})':"
+                        f"text_align={c['align']}:x='{x}':y='h*({c['y']:.4f}+{rise})-text_h/2':alpha='{alpha}'")
+                if glow:                               # the glow is a thick outline in one colour, blurred later
+                    g = f"0x{c['glowColor'][1:]}"
+                    look += f":fontcolor={g}:borderw={max(1, round(size * c['glow'] * 0.25))}:bordercolor={g}"
+                else:
+                    look += f":fontcolor=0x{c['color'][1:]}"
+                    if c["outline"]:
+                        look += f":borderw={max(1, round(size * c['outline']))}:bordercolor=0x{c['outlineColor'][1:]}"
+                    if c["shadow"]:
+                        s = max(1, round(size * c["shadow"]))
+                        look += f":shadowx={s}:shadowy={s}:shadowcolor=0x{c['shadowColor'][1:]}@0.7"
+                    if c["bg"]:
+                        look += (f":box=1:boxcolor=0x{c['boxColor'][1:]}@{c['boxOpacity']:.2f}"
+                                 f":boxborderw={max(2, round(size * 0.3))}")
+                last = en - 0.5 / FPS
+                if len(files) == 1:
+                    return [f"drawtext={look}:textfile='{files[0]}':enable='between(t,{st:.4f},{last:.4f})'"]
+                di = min(c["fadeIn"], (en - st) / 2)
+                steps = len(files)
+                return [f"drawtext={look}:textfile='{file}':enable='gte(t,{st + di * k / steps:.4f})*"
+                        + (f"lt(t,{st + di * (k + 1) / steps:.4f})'" if k < steps - 1 else f"lte(t,{last:.4f})'")
+                        for k, file in enumerate(files)]
+
             for n, c in enumerate(vtexts):
-                text = work / f"{p}-{n}.txt"
-                text.write_text(c["text"])
                 st, en = (sf[id(c)] - a) / FPS, (sf[id(c)] + nf[id(c)] - a) / FPS
                 font = font_file(c["font"], c["bold"])
                 if not font:
                     raise ValueError("Can't draw text: no font found (fontconfig's fc-match is missing)")
-                size = max(4, round(H * c["tsize"]))
-                # fade: the alpha rises over fadeIn seconds and falls over fadeOut (box included)
-                fi, fo = min(c["fadeIn"], (en - st) / 2), min(c["fadeOut"], (en - st) / 2)
-                ramp = [f"clip((t-{st:.4f})/{fi:.4f},0,1)" if fi > 0 else "1",
-                        f"clip(({en:.4f}-t)/{fo:.4f},0,1)" if fo > 0 else "1"]
-                alpha = f":alpha='min({ramp[0]},{ramp[1]})'" if fi > 0 or fo > 0 else ""
-                bg = f":box=1:boxcolor=black@0.55:boxborderw={max(2, round(size * 0.3))}" if c["bg"] else ""
-                graph.append(f"[b{layer}]drawtext=fontfile='{font['file']}':textfile='{text}':expansion=none:"
-                             f"fontsize={size}:fontcolor=0x{c['color'][1:]}:text_align=C:"
-                             f"x=W*{c['x']:.4f}-text_w/2:y=H*{c['y']:.4f}-text_h/2{bg}{alpha}:"
-                             f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
+                if c["animIn"] == "type" and c["fadeIn"] > 0 and c["text"]:
+                    units = typing_units(c["text"])
+                    steps_text = ["".join(units[:k + 1]) for k in range(len(units))]
+                else:
+                    steps_text = [c["text"]]
+                files = []
+                for k, words in enumerate(steps_text):
+                    textfile = work / f"{p}-{n}-{k}.txt"
+                    textfile.write_text(words)
+                    files.append(textfile)
+                if c["glow"]:
+                    # Glow: the text drawn thick in the glow colour on a clear quarter-size layer,
+                    # blurred, scaled up and laid under the text. Small, so it's quick even at 4K.
+                    gw, gh = max(16, W // 4 // 2 * 2), max(16, H // 4 // 2 * 2)
+                    sigma = max(1.0, gh * c["tsize"] * c["glow"] * 0.3)
+                    graph.append(f"color=c=black@0:s={gw}x{gh}:r={FPS}:d={en - st + 2 / FPS:.4f},format=rgba,"
+                                 + ",".join(drawtexts(c, files, font["file"], 0, en - st, gh, glow=True))
+                                 + f",gblur=sigma={sigma:.2f},scale={W}:{H},setpts=PTS+{st:.4f}/TB[gl{n}]")
+                    graph.append(f"[b{layer}][gl{n}]overlay=format=auto:eof_action=pass[b{layer + 1}]")
+                    layer += 1
+                graph.append(f"[b{layer}]" + ",".join(drawtexts(c, files, font["file"], st, en, H)) + f"[b{layer + 1}]")
                 layer += 1
             graph.append(f"[b{layer}]format=yuv420p,{SDR_TAGS},trim=end_frame={b - a}"
                          + (",format=nv12,hwupload" if gpu else "") + "[vout]")

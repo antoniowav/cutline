@@ -5,6 +5,21 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-07
+
+### Added
+- Text looks: an outline, a drop shadow and a glow, each in any colour, and a box in any
+  colour and opacity (Look ▾). Line text up on the left, centre or right of its spot.
+- One-click styles: Plain, Subtitle, YouTube bold, Yellow punch, Neon, Highlighter and
+  Red label, for every selected title at once.
+- Text animations: in with a fade, pop, slide, typewriter or bounce; out with a fade, pop
+  or slide. The preview and the export move the same way.
+- Titles (＋ Title): a big title, a two-line lower third, a subscribe button and a chapter
+  heading, ready to type over.
+
+### Changed
+- The header wraps on narrow windows instead of pushing Export off the screen.
+
 ## [0.3.0] - 2026-10-07
 
 ### Added
@@ -87,7 +102,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/antoniowav/cutline/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/antoniowav/cutline/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoniowav/cutline/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/antoniowav/cutline/compare/v0.1.0...v0.1.1

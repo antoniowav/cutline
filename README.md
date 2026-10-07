@@ -39,6 +39,7 @@ original files.
   and a background box; drag
   them in the preview. The export draws them with the same font, so they look as they do here.
 - **Fades**: fade text and music in and out; the timeline shows the ramps.
+- **Text looks and motion**: outline, shadow, glow and coloured boxes, one-click styles (YouTube bold, Neon, …), and pop, slide, typewriter or bounce animations. **＋ Title** adds a big title, a lower third, a subscribe button or a chapter heading.
 - **Smooth preview**: light 540p proxies are made in the background, on the GPU through VA-API when available, falling back to the CPU.
 - **HDR → SDR**: iPhone HLG / Dolby Vision footage is tone-mapped (libplacebo on the GPU, zscale on the CPU as a fallback), so it doesn't look washed out or red.
 - **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size, 1440p, 1080p or 720p, encoded on the GPU (VA-API) when available. Long 4K edits are rendered in pieces, so memory stays low however many cuts there are.
