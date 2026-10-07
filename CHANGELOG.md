@@ -5,6 +5,23 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-07
+
+### Added
+- ✂ Silences: find the pauses in the selected clips and cut them out, keeping a little
+  around the words; what follows moves up. How quiet and how long a pause is can be set.
+- Ducking: music set to "Duck under voice" drops about 12 dB while someone speaks and comes
+  back in the pauses, in the export and in the preview.
+- Auto captions (＋ Title → Auto captions…): whisper.cpp writes captions from the voices on
+  the timeline, a few words or one word at a time, as text clips on a new CC track to fix
+  and style like any title. Runs on this computer; the speech model (190 MB) is downloaded
+  once on request. Needs whisper.cpp (on Arch: `sudo pacman -S whisper-cpp`; add
+  `ggml-vulkan` to use the GPU).
+- Thumbnail (in the export menu): the frame at the playhead, titles and all, as a PNG.
+
+### Fixed
+- Exports with no sound at all could fail (ffmpeg stopped on a silent branch).
+
 ## [0.7.0] - 2026-10-07
 
 ### Added
@@ -150,7 +167,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/antoniowav/cutline/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/antoniowav/cutline/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/antoniowav/cutline/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/antoniowav/cutline/compare/v0.4.0...v0.5.0

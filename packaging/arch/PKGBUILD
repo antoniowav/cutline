@@ -1,6 +1,6 @@
 # Maintainer: Antonio Piattelli <hello@antoniopiattelli.com>
 pkgname=cutline
-pkgver=0.7.0
+pkgver=0.8.0
 pkgrel=1
 pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)'
 arch=('any')
@@ -11,7 +11,9 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             'vulkan-driver: GPU HDR tone mapping with libplacebo'
             'libva-driver: GPU-made preview proxies (VA-API)'
             'xdg-user-dirs: find your Videos folder'
-            'xdg-utils: show exports in the file manager, use your default browser')
+            'xdg-utils: show exports in the file manager, use your default browser'
+            'whisper-cpp: auto captions'
+            'ggml-vulkan: faster auto captions on the GPU')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('065402b2aa62689a080074eef18d86e64a2dbb85d726cae0f2a63e644e892e85')
 

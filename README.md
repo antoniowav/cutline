@@ -29,6 +29,8 @@ original files.
 - **Detach audio** onto its own clip, and **crop** or **turn** any clip's picture.
 - **Speed, zoom and keyframes**: 0.25–4x with the pitch kept, punch-ins (**Z**), Ken Burns, and keyframed zoom, focus and position.
 - **Transitions**: crossfade, dip to black, slide, wipe, circle and zoom, with the sound crossfading along.
+- **Silence cutter, ducking and auto captions**: cut the pauses out in one go, duck music under speech, and caption with whisper.cpp, on this computer (optional: `whisper-cpp`).
+- **Thumbnails**: the frame at the playhead, titles and all, as a PNG.
 - **Colour**: brightness, contrast, saturation, warmth and looks for many clips at once, **.cube LUTs** (from ~/Videos/LUTs or Downloads), and **green screen** with an eyedropper.
 - **Any shape**: 16:9, 9:16 for Shorts/TikTok/Reels, 1:1 or 4:5; **Fill** a tall frame with a wide video, or fill the bars with a **blurred** copy of it.
 - **Export presets**: sizes from 720p up, a small file, a GIF, and **loudness** normalised to -14 LUFS.
@@ -128,6 +130,7 @@ Start screen and *Add video* list: <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>E
 | _optional_ VA-API driver | GPU-made preview proxies (`libva-mesa-driver` / `intel-media-driver`); the CPU is used otherwise |
 | _optional_ Vulkan driver | needed by libplacebo; without it HDR is tone-mapped on the CPU |
 | _optional_ `xdg-user-dirs`, `xdg-utils` | find your Videos folder; open the export folder; pick your default browser |
+| _optional_ `whisper-cpp` | auto captions, on this computer (`ggml-vulkan` lets it use the GPU); the speech model is downloaded once from inside Cutline |
 | _optional_ Omarchy | live theme colours (`~/.local/state/omarchy/current/theme/colors.toml`) and font (`omarchy font current`) |
 
 ### Settings (environment variables)
@@ -136,6 +139,8 @@ Start screen and *Add video* list: <kbd>↑</kbd>/<kbd>↓</kbd> to move, <kbd>E
 | --- | --- | --- |
 | `CUTLINE_BROWSER` | your default browser if it's Chromium-based, else the first one found | Browser command for the app window, e.g. `brave` or `flatpak run com.brave.Browser` |
 | `CUTLINE_VIDEOS` | XDG Videos folder (`xdg-user-dir VIDEOS`), else `~/Videos` | Folder listed on the start screen (searched 4 levels deep) |
+| `CUTLINE_DOWNLOADS` | XDG Downloads folder, else `~/Downloads` | Folder the GIFs & SFX drawer watches (LUTs are found here too) |
+| `CUTLINE_PICTURES` | XDG Pictures folder, else `~/Pictures` | Pictures offered in the ＋ Media picker |
 | `CUTLINE_NO_BROWSER` | unset | Only start the server and print its URL (the URL works once) |
 
 ## Data locations
