@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-07
+
 ### Added
 - Free layout: drag a clip anywhere in the preview and resize it from its corners, with
   snapping; Fit or Fill (crop) per clip.
@@ -73,6 +75,7 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/antoniowav/cutline/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/antoniowav/cutline/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/antoniowav/cutline/releases/tag/v0.1.0
