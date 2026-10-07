@@ -690,6 +690,62 @@ class CutlineServer(unittest.TestCase):
         self.assertTrue(near(pixel(out, 0.02, 60), (128, 128, 128), 45), f"half-white at the left: {pixel(out, 0.02, 60)}")
         self.assertTrue(near(pixel(out, 0.02, 580), black), "nothing yet at the right")
         self.assertTrue(near(pixel(out, 1.9, 560), (128, 128, 128), 45), f"slid to the right: {pixel(out, 1.9, 560)}")
+    def test_9k_colour_lut_and_green_screen(self):
+        v = self.videos
+        # A mid-grey picture with a pure-green square in the middle: something to colour and to key.
+        ffmpeg("-f", "lavfi", "-i", f"color=c=0x808080:s=640x360:r={FPS}:d=2", "-vf",
+               "drawbox=x=220:y=100:w=200:h=160:color=0x00ff00:t=fill", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(v / "greenbox.mp4"))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(v / "redback.mp4"))
+        # An "invert" LUT, in the LUT folder: what's dark becomes light.
+        luts = v / "LUTs"
+        luts.mkdir(exist_ok=True)
+        rows = [f"{1 - r / 1:.1f} {1 - g / 1:.1f} {1 - b / 1:.1f}" for b in (0, 1) for g in (0, 1) for r in (0, 1)]
+        (luts / "invert.cube").write_text('TITLE "invert"\nLUT_3D_SIZE 2\n' + "\n".join(rows) + "\n")
+        self.json("/api/new", {"path": str(v / "greenbox.mp4")})
+        self.json("/api/addsource", {"path": str(v / "redback.mp4")})
+        listed = self.json("/api/luts")["luts"]
+        self.assertIn("invert", [x["name"] for x in listed])
+        status, data = self.call(f"/api/lut?path={luts / 'invert.cube'}")
+        self.assertEqual((status, data[:5]), (200, b"TITLE"))
+        self.assertEqual(self.call("/api/lut?path=/etc/passwd")[0], 404, "only .cube files from the LUT folders")
+
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        grey = {"id": 1, "src": ids["greenbox.mp4"], "track": 1, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3}
+        W = 640
+
+        def export(clips):
+            state = self.export({**project, "clips": clips})
+            self.assertEqual(state["state"], "done", state["error"])
+            return state["output"]
+
+        def pixel(out, x, y):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", "1", "-i", out, "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return tuple(rgb[(y * W + x) * 3:(y * W + x) * 3 + 3])
+
+        near = lambda got, want, tol=30: all(abs(g - w) < tol for g, w in zip(got, want, strict=True))
+        plain = pixel(export([grey]), 40, 40)
+        bright = pixel(export([{**grey, "color": {"b": 1.5, "c": 1, "s": 1, "t": 0}}]), 40, 40)
+        self.assertGreater(sum(bright), sum(plain) + 100, f"brighter: {plain} → {bright}")
+        warm = pixel(export([{**grey, "color": {"b": 1, "c": 1, "s": 1, "t": 1}}]), 40, 40)
+        self.assertGreater(warm[0] - warm[2], 40, f"warmer: more red than blue {warm}")
+        mono = pixel(export([{**grey, "color": {"b": 1, "c": 1, "s": 0, "t": 0}}]), 320, 180)
+        self.assertLess(max(mono) - min(mono), 12, f"no saturation: the green square turns grey {mono}")
+        inverted = pixel(export([{**grey, "lut": str(luts / "invert.cube")}]), 320, 180)
+        self.assertTrue(near(inverted, (255, 0, 255), 60), f"the LUT inverts green to magenta: {inverted}")
+        outside = pixel(export([{**grey, "lut": "/etc/passwd"}]), 320, 180)
+        self.assertTrue(near(outside, (0, 255, 0), 60), "a LUT from anywhere else is ignored")
+        # Green screen: over a red clip, the green square becomes see-through, the grey stays.
+        keyed = export([{**grey, "id": 2, "src": ids["redback.mp4"]},
+                        {**grey, "track": 2, "key": {"on": True, "color": "#00ff00", "sim": 0.2, "blend": 0.05}}])
+        self.assertTrue(near(pixel(keyed, 320, 180), (255, 0, 0), 50), f"red shows through: {pixel(keyed, 320, 180)}")
+        self.assertTrue(near(pixel(keyed, 40, 40), (128, 128, 128), 30), "the grey isn't keyed")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

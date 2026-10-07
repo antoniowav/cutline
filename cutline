@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.6.0"
+VERSION = "0.7.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -91,6 +91,8 @@ MUSIC = Path.home() / "Music"   # music and voiceovers can come from here as wel
 PICTURES = user_dir("PICTURES", "CUTLINE_PICTURES", "Pictures")      # photos and stickers for the picker
 DOWNLOADS = user_dir("DOWNLOAD", "CUTLINE_DOWNLOADS", "Downloads")   # the media drawer watches this
 MEDIA = VIDEOS / "Cutline media"   # where dropped files and GIFs dragged from the web are kept
+LUT_DIRS = (VIDEOS / "LUTs", DOWNLOADS, xdg_dir("XDG_DATA_HOME", ".local/share") / "cutline/luts")   # .cube files
+MAX_LUT = 20 << 20
 MAX_UPLOAD = 2 << 30               # a dropped file: up to 2 GB
 MAX_FETCH = 200 << 20              # a GIF or sound dragged from a web page: up to 200 MB
 STILL_LEN = 5.0                    # how long a photo or sticker stays on screen when added
@@ -330,6 +332,55 @@ def clean_trans(trans):
     return {"type": trans["type"], "dur": num(trans.get("dur", 0.5), 0.1, 3)}
 
 
+def clean_color(color):
+    color = color if isinstance(color, dict) else {}
+    return {"b": num(color.get("b", 1), 0.3, 2), "c": num(color.get("c", 1), 0.3, 2),
+            "s": num(color.get("s", 1), 0, 3), "t": num(color.get("t", 0), -1, 1)}
+
+
+def clean_key(key):
+    """A green screen: the colour to take out, how close a colour must be, how soft the edge."""
+    if not isinstance(key, dict) or not key.get("on"):
+        return None
+    return {"color": colour(key.get("color"), "#00ff00"), "sim": num(key.get("sim", 0.15), 0.01, 0.6),
+            "blend": num(key.get("blend", 0.08), 0, 0.5)}
+
+
+def color_matrix(color):
+    """The colour adjustment as one 3x3 matrix and an offset, on RGB in 0..1: brightness, then
+    warmth, then saturation (the CSS/SVG saturate matrix), then contrast around the middle.
+    The editor's colorMatrix() builds the same, for an SVG feColorMatrix."""
+    b, c, s, w = color["b"], color["c"], color["s"], color["t"]
+    sat = [[0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s],
+           [0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s],
+           [0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s]]
+    warm = [1 + 0.2 * w, 1 + 0.03 * w, 1 - 0.2 * w]
+    m = [[c * sat[i][j] * warm[j] * b for j in range(3)] for i in range(3)]
+    return m, 0.5 * (1 - c)
+
+
+def lut_file(path):
+    """A .cube LUT the user picked: only from the LUT folders, and not absurdly big."""
+    if not path:
+        return None
+    real = Path(os.path.realpath(str(path)))
+    for root in LUT_DIRS:
+        root = Path(os.path.realpath(root))
+        if real.suffix.lower() == ".cube" and root in real.parents and real.is_file() and real.stat().st_size <= MAX_LUT:
+            return real
+    return None
+
+
+def list_luts():
+    files = []
+    for root in LUT_DIRS:
+        if root.is_dir():
+            depth = ("*",) if root == DOWNLOADS else ("*", "*/*")
+            files += [f for d in depth for f in root.glob(d) if f.suffix.lower() == ".cube" and f.is_file()]
+    return [{"path": str(f), "name": f.stem, "where": home_label(f.parent)}
+            for f in sorted(set(files), key=lambda f: f.stem.lower())]
+
+
 def eased(keys, field, T):
     """A keyframed value as an ffmpeg expression over T (seconds into the clip): eased in and
     out between keys (smoothstep), held before the first and after the last. The editor's
@@ -463,7 +514,10 @@ def clean_clip(c):
             "zoom": num(c.get("zoom", 1), 1, 4), "fx": num(c.get("fx", 0.5), 0, 1), "fy": num(c.get("fy", 0.5), 0, 1),
             "opacity": num(c.get("opacity", 1), 0, 1),
             "keys": clean_keys(c.get("keys"), c),
-            "trans": clean_trans(c.get("trans"))}
+            "trans": clean_trans(c.get("trans")),
+            # colour: brightness, contrast, saturation and warmth; a .cube LUT; a green screen
+            "color": clean_color(c.get("color")), "lut": str(c.get("lut") or "")[:4096],
+            "key": clean_key(c.get("key"))}
 
 
 _fonts = None
@@ -888,6 +942,37 @@ class App:
             size = float(c.get("size", 0.3))
             return 0, 0, max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2)
 
+        luts = {}                                  # a LUT file -> its copy in the work folder
+
+        def looks(k, c):
+            """Green screen, LUT and colour, as filters: keyed on the source's own colours, then
+            the LUT's look, then the adjustments, the same order as the preview's."""
+            f = ""
+            if c["key"]:
+                f += (f",format=yuva420p,chromakey=color=0x{c['key']['color'][1:]}:similarity={c['key']['sim']:.4f}"
+                      f":blend={c['key']['blend']:.4f}")
+            lut = lut_file(c["lut"])
+            if lut:
+                if lut not in luts:
+                    luts[lut] = work / f"lut{len(luts)}.cube"
+                    shutil.copyfile(lut, luts[lut])
+                f += f",lut3d=file='{luts[lut]}':interp=tetrahedral"
+            col = c["color"]
+            if col != {"b": 1, "c": 1, "s": 1, "t": 0}:
+                m, off = color_matrix(col)
+                names = "rgb"
+                f += "," + "colorchannelmixer=" + ":".join(f"{names[i]}{names[j]}={m[i][j]:.5f}"
+                                                            for i in range(3) for j in range(3))
+                if abs(off) > 1e-6:
+                    f += f",lutrgb=r='val+{off * 255:.3f}':g='val+{off * 255:.3f}':b='val+{off * 255:.3f}'"
+            if f and not (c["key"] or info_alpha(c)):
+                f += f",format=yuv420p,{SDR_TAGS}"
+            elif f:
+                f += ",format=yuva420p"
+            return f
+
+        info_alpha = lambda c: self.sources[c["src"]].info.get("alpha")
+
         def fitted(c, bw, bh, cr):
             """The size a clip's picture gets in its box (what scale's force_original_aspect_ratio gives)."""
             info = self.sources[c["src"]].info
@@ -904,10 +989,13 @@ class App:
             info = self.sources[c["src"]].info
             speed = c.get("speed", 1)
             # a sticker keeps its transparent pixels on an overlay; on the bottom strip it sits on black
-            alpha = info.get("alpha") and not pad_full
+            alpha = (info.get("alpha") or c["key"]) and not pad_full
             fade_alpha = not pad_full and (c["opacity"] < 1 or c["fadeIn"] or c["fadeOut"])
             color = (tonemap() if info.get("hdr") else
                      "format=yuva420p" if alpha else f"format=yuv420p,{SDR_TAGS}")
+            color += looks(k, c)
+            if pad_full and (c["key"] or info.get("alpha")):   # see-through on the bottom strip: black
+                color += ",format=yuva420p,premultiply=inplace=1,format=yuv420p"
             if c.get("layout") in ("free", "full") and c.get("fit") == "fill":
                 # cover the box, cropping the overflow evenly from both sides
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}"
@@ -1498,6 +1586,14 @@ def handler_for(app: App):
                 return self.send_json({"videos": list_videos(audio=True), "videosDir": home_label(VIDEOS)})
             if p == "/api/export":
                 return self.send_json(app.export)
+            if p == "/api/luts":
+                return self.send_json({"luts": list_luts(), "folder": home_label(LUT_DIRS[0])})
+            if p == "/api/lut":
+                q = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                file = lut_file((q.get("path") or [""])[0])
+                if not file:
+                    return self.send_json({"error": "not found"}, 404)
+                return self.send_file(file, "text/plain; charset=utf-8")
             if p == "/api/drawer":
                 return self.send_json({"files": list_drawer(), "downloads": home_label(DOWNLOADS)})
             if p == "/api/thumb":

@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-07
+
+### Added
+- Colour (Colour ▾): brightness, contrast, saturation and warmth, and one-click looks
+  (Warm, Cool, Vivid, Punchy, Faded, Black & white, Noir). They apply to every selected
+  clip at once, so a whole edit can be graded in one go. The preview and the export use the
+  same colour matrix.
+- LUTs: any .cube file in ~/Videos/LUTs or Downloads, applied in the export with lut3d and
+  in the preview with WebGL.
+- Green screen: take a colour out of a clip, picked with the eyedropper from the preview,
+  with a strength and a soft edge. On a track above, what's below shows through.
+
 ## [0.6.0] - 2026-10-07
 
 ### Added
@@ -138,7 +150,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/antoniowav/cutline/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/antoniowav/cutline/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/antoniowav/cutline/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/antoniowav/cutline/compare/v0.3.0...v0.4.0

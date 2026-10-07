@@ -60,7 +60,17 @@
   #swatches button { width:22px; height:22px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   #swatches button.on { outline:2px solid var(--accent); outline-offset:1px; }
   #thex { width:100%; box-sizing:border-box; }
-  #cropWrap, #lookWrap, #motionWrap { position:relative; }
+  #cropWrap, #lookWrap, #motionWrap, #colourWrap { position:relative; }
+  #colourPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
+    border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:290px; }
+  #colourPanel.open { display:flex; }
+  #colourPanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #colourPanel input[type=range] { width:120px; }
+  #colourPanel .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  #colourPanel hr { border:0; border-top:1px solid var(--bg3); margin:2px 0; width:100%; }
+  #keyHex { width:76px; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px; padding:2px 4px; }
+  #box canvas.gl { position:absolute; display:none; pointer-events:none; }
+  #stage.picking, #stage.picking * { cursor:crosshair !important; }
   #motionPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
   #motionPanel.open { display:flex; }
@@ -168,6 +178,23 @@
       <label class="muted">Bottom <input id="cropb" type="range" min="0" max="45" step="0.5" value="0"></label>
       <button id="cropReset">No crop</button></span></span>
   <button id="detachBtn" title="Put this clip's sound on its own clip, so it can be moved and trimmed apart" disabled>Detach audio</button>
+  <span id="colourWrap"><button id="colourBtn" title="Colour, LUT and green screen for the selected clips" disabled>Colour ▾</button>
+    <span id="colourPanel">
+      <label class="muted">Look <select id="cLook"><option value="">Choose…</option><option value="natural">Natural (reset)</option>
+        <option value="warm">Warm</option><option value="cool">Cool</option><option value="vivid">Vivid</option><option value="punchy">Punchy</option>
+        <option value="faded">Faded</option><option value="mono">Black &amp; white</option><option value="noir">Noir</option></select></label>
+      <label class="muted">Brightness <input id="cB" type="range" min="30" max="200" step="1" value="100"></label>
+      <label class="muted">Contrast <input id="cC" type="range" min="30" max="200" step="1" value="100"></label>
+      <label class="muted">Saturation <input id="cS" type="range" min="0" max="300" step="1" value="100"></label>
+      <label class="muted">Warmth <input id="cT" type="range" min="-100" max="100" step="1" value="0"></label>
+      <label class="muted" id="lutLabel" title=".cube files in ~/Videos/LUTs or Downloads">LUT <select id="cLut"><option value="">None</option></select></label>
+      <hr>
+      <span class="row"><label class="muted"><input id="kOn" type="checkbox"> Green screen</label>
+        <input id="keyHex" maxlength="7" spellcheck="false" value="#00ff00" title="The colour to take out, as #rrggbb">
+        <button class="sw" id="keySw" title="Pick it from the preview"><i></i></button></span>
+      <label class="muted" title="How close a colour has to be to go">Strength <input id="kSim" type="range" min="1" max="60" step="1" value="15"></label>
+      <label class="muted" title="How soft the cut-out edge is">Soft edge <input id="kBlend" type="range" min="0" max="50" step="1" value="8"></label>
+    </span></span>
   <span id="motionWrap"><button id="motionBtn" title="Zoom, focus, opacity and keyframes (Z punches in)" disabled>Motion ▾</button>
     <span id="motionPanel">
       <label class="muted">Zoom <span><input id="mzoom" type="range" min="100" max="300" step="1" value="100"> <span id="mzoomVal">100%</span></span></label>
@@ -250,6 +277,7 @@
   <span style="flex-basis:100%"></span><span class="muted">In</span><span class="muted" id="drawerDir"></span>
   <span class="muted" style="white-space:normal">Download a GIF or sound, or drag one from a web page onto Cutline: it shows up here. Click to add it at the playhead.</span></div>
   <ul id="drawerList"></ul></div>
+<svg width="0" height="0" style="position:absolute"><defs id="filters"></defs></svg>
 <div id="dropHint">Drop to add at the playhead</div>
 <div id="toast"></div>
 
@@ -453,6 +481,138 @@ function seekTo(v, want) {
   if (v.seeking) { v._pending = want; return; }
   v.currentTime = want;
 }
+// ---------- colour: an SVG colour matrix in the preview, the same numbers as the export ----------
+const NO_COLOR = { b: 1, c: 1, s: 1, t: 0 };
+// brightness, then warmth, then saturation (the CSS saturate matrix), then contrast round the
+// middle: color_matrix() in the export builds the same matrix and offset.
+function colorMatrix(col) {
+  const { b, c, s, t: w } = { ...NO_COLOR, ...col };
+  const sat = [[0.213 + 0.787 * s, 0.715 - 0.715 * s, 0.072 - 0.072 * s],
+               [0.213 - 0.213 * s, 0.715 + 0.285 * s, 0.072 - 0.072 * s],
+               [0.213 - 0.213 * s, 0.715 - 0.715 * s, 0.072 + 0.928 * s]];
+  const warm = [1 + 0.2 * w, 1 + 0.03 * w, 1 - 0.2 * w];
+  return { m: sat.map(row => row.map((v, j) => c * v * warm[j] * b)), off: 0.5 * (1 - c) };
+}
+const plainColor = col => !col || Object.entries(NO_COLOR).every(([k, v]) => Math.abs((col[k] ?? v) - v) < 1e-6);
+function colorFilter(c) {
+  if (plainColor(c.color)) return "";
+  const { m, off } = colorMatrix(c.color), id = `cf${c.id}`;
+  const values = [...m.flatMap(row => [...row.map(v => v.toFixed(5)), 0, off.toFixed(5)]), 0, 0, 0, 1, 0].join(" ");
+  let el = document.getElementById(id);
+  if (!el) { el = document.createElementNS("http://www.w3.org/2000/svg", "filter"); el.id = id;
+    el.setAttribute("color-interpolation-filters", "sRGB");
+    el.appendChild(document.createElementNS("http://www.w3.org/2000/svg", "feColorMatrix")); $("filters").appendChild(el); }
+  if (el.firstChild.getAttribute("values") !== values) { el.firstChild.setAttribute("type", "matrix"); el.firstChild.setAttribute("values", values); }
+  return `url(#${id})`;
+}
+// LUTs (.cube) are read once and kept as RGBA bytes for a WebGL 3D texture.
+const lutCache = {};
+function loadLut(path) {
+  if (!path || lutCache[path]) return lutCache[path]?.ready ? lutCache[path] : null;
+  lutCache[path] = { ready: false };
+  fetch(`/api/lut?path=${encodeURIComponent(path)}`).then(r => r.ok ? r.text() : Promise.reject()).then(text => {
+    let n = 0, lo = [0, 0, 0], hi = [1, 1, 1]; const vals = [];
+    for (const line of text.split(/\r?\n/)) {
+      const s = line.trim(); if (!s || s.startsWith("#") || s.startsWith("TITLE")) continue;
+      const w = s.split(/\s+/);
+      if (w[0] === "LUT_3D_SIZE") n = +w[1];
+      else if (w[0] === "DOMAIN_MIN") lo = w.slice(1, 4).map(Number);
+      else if (w[0] === "DOMAIN_MAX") hi = w.slice(1, 4).map(Number);
+      else if (/^[-\d.]/.test(w[0]) && w.length >= 3) vals.push(+w[0], +w[1], +w[2]);
+    }
+    if (!n || vals.length < n * n * n * 3) throw new Error("not a 3D LUT");
+    const data = new Uint8Array(n * n * n * 4);
+    for (let i = 0; i < n * n * n; i++) for (let j = 0; j < 4; j++)
+      data[i * 4 + j] = j === 3 ? 255 : Math.round(Math.max(0, Math.min(1, vals[i * 3 + j])) * 255);
+    Object.assign(lutCache[path], { ready: true, n, data, lo, hi }); sync(true);
+  }).catch(() => { lutCache[path] = { ready: false, bad: true }; toast("That LUT couldn't be read"); });
+  return null;
+}
+// One WebGL canvas per track, drawn over the hidden <video> when a clip has a LUT or a green
+// screen: the shader keys on the source's own colours (like ffmpeg's chromakey, 3×3 average),
+// then looks the colour up in the LUT. The colour matrix then applies on top, as in the export.
+const gls = {};
+const GL_VS = `#version 300 es
+in vec2 p; out vec2 uv; void main() { uv = vec2(p.x * 0.5 + 0.5, 0.5 - p.y * 0.5); gl_Position = vec4(p, 0.0, 1.0); }`;
+const GL_FS = `#version 300 es
+precision highp float; precision highp sampler3D;
+uniform sampler2D img; uniform sampler3D lut; uniform bool useLut, useKey;
+uniform vec3 lutLo, lutHi; uniform float lutN; uniform vec2 keyUV, texel; uniform float sim, blend;
+in vec2 uv; out vec4 o;
+vec2 chroma(vec3 c) { c *= 255.0; return vec2((-38.0 * c.r - 74.0 * c.g + 112.0 * c.b) / 256.0 + 128.0,
+                                            (112.0 * c.r - 94.0 * c.g - 18.0 * c.b) / 256.0 + 128.0); }
+void main() {
+  vec3 c = texture(img, uv).rgb; float a = 1.0;
+  if (useKey) {
+    float d = 0.0;
+    for (int i = -1; i <= 1; i++) for (int j = -1; j <= 1; j++) {
+      vec2 q = chroma(texture(img, uv + vec2(float(i), float(j)) * texel * 2.0).rgb) - keyUV;
+      d += sqrt(dot(q, q) / (255.0 * 255.0 * 2.0));
+    }
+    d /= 9.0;
+    a = blend > 0.0001 ? clamp((d - sim) / blend, 0.0, 1.0) : (d > sim ? 1.0 : 0.0);
+  }
+  if (useLut) { vec3 x = clamp((c - lutLo) / (lutHi - lutLo), 0.0, 1.0); c = texture(lut, x * (lutN - 1.0) / lutN + 0.5 / lutN).rgb; }
+  o = vec4(c * a, a);
+}`;
+function glFor(trId) {
+  if (gls[trId]) return gls[trId];
+  const cv = document.createElement("canvas"); cv.className = "gl"; box.appendChild(cv);
+  const gl = cv.getContext("webgl2", { premultipliedAlpha: true, alpha: true });
+  if (!gl) return (gls[trId] = { cv, gl: null });
+  const sh = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+  const prog = gl.createProgram(); gl.attachShader(prog, sh(gl.VERTEX_SHADER, GL_VS)); gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, GL_FS));
+  gl.linkProgram(prog); gl.useProgram(prog);
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, "p"); gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  const img = gl.createTexture(), lut = gl.createTexture();
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, img);
+  for (const [k, v] of [[gl.TEXTURE_MIN_FILTER, gl.LINEAR], [gl.TEXTURE_MAG_FILTER, gl.LINEAR], [gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE], [gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE]]) gl.texParameteri(gl.TEXTURE_2D, k, v);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_3D, lut);
+  for (const k of [gl.TEXTURE_MIN_FILTER, gl.TEXTURE_MAG_FILTER]) gl.texParameteri(gl.TEXTURE_3D, k, gl.LINEAR);
+  for (const k of [gl.TEXTURE_WRAP_S, gl.TEXTURE_WRAP_T, gl.TEXTURE_WRAP_R]) gl.texParameteri(gl.TEXTURE_3D, k, gl.CLAMP_TO_EDGE);
+  const u = name => gl.getUniformLocation(prog, name);
+  gl.uniform1i(u("img"), 0); gl.uniform1i(u("lut"), 1);
+  return (gls[trId] = { cv, gl, u, lutPath: null, clip: null, video: null });
+}
+const hexRGB = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255);
+const needsGL = c => !!c && !isText(c) && !isAudio(c) && (!!c.key?.on || !!c.lut);
+function drawGL() {
+  for (const g of Object.values(gls)) {
+    const { gl, cv, clip: c, video: v } = g;
+    if (!gl || !c || cv.style.display === "none" || !v || v.readyState < 2 || !v.videoWidth) continue;
+    if (cv.width !== v.videoWidth || cv.height !== v.videoHeight) { cv.width = v.videoWidth; cv.height = v.videoHeight; }
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.activeTexture(gl.TEXTURE0); gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
+    const L = c.lut ? loadLut(c.lut) : null;
+    if (L && g.lutPath !== c.lut) {
+      gl.activeTexture(gl.TEXTURE1); gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA8, L.n, L.n, L.n, 0, gl.RGBA, gl.UNSIGNED_BYTE, L.data); g.lutPath = c.lut;
+    }
+    gl.uniform1i(g.u("useLut"), L ? 1 : 0);
+    if (L) { gl.uniform3fv(g.u("lutLo"), L.lo); gl.uniform3fv(g.u("lutHi"), L.hi); gl.uniform1f(g.u("lutN"), L.n); }
+    const k = c.key?.on ? c.key : null;
+    gl.uniform1i(g.u("useKey"), k ? 1 : 0);
+    if (k) {
+      const [r, gg, b] = hexRGB(k.color || "#00ff00").map(x => x * 255);
+      gl.uniform2f(g.u("keyUV"), (-38 * r - 74 * gg + 112 * b) / 256 + 128, (112 * r - 94 * gg - 18 * b) / 256 + 128);
+      gl.uniform1f(g.u("sim"), k.sim ?? 0.15); gl.uniform1f(g.u("blend"), k.blend ?? 0.08);
+      gl.uniform2f(g.u("texel"), 1 / cv.width, 1 / cv.height);
+    }
+    gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  }
+}
+// The GL canvas takes the <video>'s place: same box, crop, turn, opacity, colour.
+function showGL(trId, v, c) {
+  const g = needsGL(c) ? glFor(trId) : gls[trId];
+  if (!g) { v.style.visibility = ""; return; }
+  if (!needsGL(c) || !g.gl || v.style.display === "none") { g.cv.style.display = "none"; g.clip = null; v.style.visibility = ""; return; }
+  for (const k of ["left", "top", "width", "height", "transform", "transformOrigin", "clipPath", "opacity", "translate", "scale",
+                   "maskImage", "webkitMaskImage", "zIndex", "filter"]) g.cv.style[k] = v.style[k];
+  g.cv.style.display = "block"; g.clip = c; g.video = v; v.style.visibility = "hidden";
+}
+
 // Show clip c on a <video> at the playhead: the right file, time, speed, place and opacity.
 function showOn(v, c, force, muted) {
   const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
@@ -464,7 +624,7 @@ function showOn(v, c, force, muted) {
   v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
   // opacity and fades, as the export does them
   Object.assign(v.style, { opacity: isAudio(c) ? 1 : (c.opacity ?? 1) * fadeAt(c, t), translate: "", scale: "",
-                           maskImage: "", webkitMaskImage: "" });
+                           maskImage: "", webkitMaskImage: "", filter: isAudio(c) ? "" : colorFilter(c) });
   if (playing) {
     if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
     else if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
@@ -504,9 +664,10 @@ function sync(force) {
   P.tracks.forEach((tr, i) => {
     const v = vids[tr.id], o = others[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
     const hide = el => { if (!el.paused) el.pause(); el.style.display = "none"; };
-    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { hide(v); hide(o); return; }
+    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { hide(v); hide(o); showGL(tr.id, v, null); return; }
     showOn(v, c, force, actx ? false : tr.muted);
     v.style.zIndex = 3 * i + 2;
+    showGL(tr.id, v, c);
     const tx = transitionAt(c), other = tx && (tx.a === c ? tx.b : tx.a);
     if (!other || !S[other.src]) { hide(o); return; }
     showOn(o, other, force, true);
@@ -532,7 +693,7 @@ function tick() {
     sync(false); follow(); dirty = true;
   }
   if (dirty) { dirty = false; render(); }
-  drawBars();
+  drawBars(); drawGL();
   requestAnimationFrame(tick);
 }
 function follow() {
@@ -707,6 +868,8 @@ function showInspector() {
   const fades = !!one;                                 // titles, sound and (now) pictures fade
   const vid = one && !text && !isAudio(one);
   $("motionBtn").disabled = !vid; if (!vid) $("motionPanel").classList.remove("open");
+  const vids_ = selVideos(); $("colourBtn").disabled = !vids_.length;
+  if (!vids_.length) $("colourPanel").classList.remove("open"); else showColour(vids_[0]);
   $("speed").disabled = !one || text; if (one && !text) $("speed").value = String(spd(one));
   const before = vid && fullPicture(one) ? prevAbut(one) : null;
   $("transSel").disabled = $("transDur").disabled = !before;
@@ -1064,6 +1227,66 @@ function addTemplate(kind) {
   $("textInput").focus(); $("textInput").select();
 }
 $("tplSel").onchange = () => { addTemplate($("tplSel").value); $("tplSel").value = ""; };
+
+// ---------- the colour panel: applies to every selected video ----------
+const LOOKS_COLOR = { natural: NO_COLOR, warm: { t: 0.5, s: 1.1 }, cool: { t: -0.5 }, vivid: { s: 1.4, c: 1.15 },
+                      punchy: { c: 1.3, s: 1.2, b: 1.02 }, faded: { c: 0.8, s: 0.8, b: 1.05 }, mono: { s: 0 }, noir: { s: 0, c: 1.4 } };
+let lutList = [];
+async function refreshLuts() {
+  const d = await (await fetch("/api/luts")).json(); lutList = d.luts;
+  $("lutLabel").title = `.cube files in ${d.folder} or Downloads`;
+}
+function showColour(c) {
+  const col = { ...NO_COLOR, ...c.color };
+  $("cB").value = Math.round(col.b * 100); $("cC").value = Math.round(col.c * 100);
+  $("cS").value = Math.round(col.s * 100); $("cT").value = Math.round(col.t * 100);
+  const sel = $("cLut"), opts = [["", "None"], ...lutList.map(l => [l.path, l.name])];
+  if (c.lut && !lutList.some(l => l.path === c.lut)) opts.push([c.lut, c.lut.split("/").pop().replace(/\.cube$/i, "")]);
+  if (sel.options.length !== opts.length || [...sel.options].some((o, i) => o.value !== opts[i][0]))
+    sel.innerHTML = opts.map(([v, n]) => `<option value="${v.replace(/"/g, "&quot;")}"></option>`).join("");
+  [...sel.options].forEach((o, i) => o.textContent = opts[i][1]);
+  sel.value = c.lut || "";
+  $("kOn").checked = !!c.key?.on; $("keyHex").value = c.key?.color || "#00ff00";
+  $("keySw").firstElementChild.style.background = c.key?.color || "#00ff00";
+  $("kSim").value = Math.round((c.key?.sim ?? 0.15) * 100); $("kBlend").value = Math.round((c.key?.blend ?? 0.08) * 100);
+}
+$("colourBtn").onclick = async (e) => { e.stopPropagation(); if (!$("colourPanel").classList.toggle("open")) return;
+  await refreshLuts(); const c = selVideos()[0]; if (c) showColour(c); };
+$("colourPanel").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => $("colourPanel").classList.remove("open"));
+for (const [id, k, scale] of [["cB", "b", 100], ["cC", "c", 100], ["cS", "s", 100], ["cT", "t", 100]]) {
+  $(id).oninput = () => { const cs = selVideos(); if (!cs.length) return; sliderStart();
+    for (const c of cs) c.color = { ...NO_COLOR, ...c.color, [k]: $(id).value / scale }; sync(true); };
+  $(id).onchange = sliderEnd;
+}
+$("cLook").onchange = () => { const look = LOOKS_COLOR[$("cLook").value], cs = selVideos();
+  if (look && cs.length) change(() => { for (const c of cs) { c.color = { ...NO_COLOR, ...look }; if (plainColor(c.color)) delete c.color; } });
+  $("cLook").value = ""; };
+$("cLut").onchange = () => { const cs = selVideos(), path = $("cLut").value;
+  change(() => { for (const c of cs) { if (path) c.lut = path; else delete c.lut; } }); };
+const setKey = (vals, live) => { const cs = selVideos(); if (!cs.length) return;
+  const apply = () => { for (const c of cs) c.key = { on: true, color: "#00ff00", sim: 0.15, blend: 0.08, ...c.key, ...vals }; };
+  if (live) { sliderStart(); apply(); sync(true); } else change(apply); };
+$("kOn").onchange = () => setKey({ on: $("kOn").checked });
+$("keyHex").onchange = () => { let v = $("keyHex").value.trim(); if (!v.startsWith("#")) v = "#" + v;
+  if (/^#[0-9a-f]{6}$/i.test(v)) setKey({ color: v.toLowerCase(), on: true }); };
+$("keyHex").onkeydown = (e) => e.stopPropagation();
+$("kSim").oninput = () => setKey({ sim: $("kSim").value / 100 }, true); $("kSim").onchange = sliderEnd;
+$("kBlend").oninput = () => setKey({ blend: $("kBlend").value / 100 }, true); $("kBlend").onchange = sliderEnd;
+// The eyedropper: the next click in the preview takes the colour under it from the clip's own picture.
+let picking = false;
+$("keySw").onclick = (e) => { e.stopPropagation(); picking = true; $("stage").classList.add("picking"); toast("Click the green (or blue) in the preview"); };
+stageEl.addEventListener("pointerdown", (e) => {
+  if (!picking) return;
+  picking = false; $("stage").classList.remove("picking"); e.stopImmediatePropagation(); e.preventDefault();
+  const c = selVideos()[0]; if (!c) return;
+  const v = vids[c.track], r = v.getBoundingClientRect();
+  if (!v.videoWidth || e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) return toast("Click on the clip itself");
+  const cv = document.createElement("canvas"); cv.width = v.videoWidth; cv.height = v.videoHeight;
+  const g = cv.getContext("2d", { willReadFrequently: true }); g.drawImage(v, 0, 0);
+  const [R, G, B] = g.getImageData(Math.floor((e.clientX - r.left) / r.width * cv.width), Math.floor((e.clientY - r.top) / r.height * cv.height), 1, 1).data;
+  setKey({ on: true, color: "#" + [R, G, B].map(x => x.toString(16).padStart(2, "0")).join("") });
+}, { capture: true });
 
 // ---------- motion: zoom, focus, opacity, keyframes; speed; transitions ----------
 // With keyframes, a change at the playhead goes into the key there (made if there is none).
