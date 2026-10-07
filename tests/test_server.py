@@ -737,10 +737,12 @@ class CutlineServer(unittest.TestCase):
         self.assertGreater(warm[0] - warm[2], 40, f"warmer: more red than blue {warm}")
         mono = pixel(export([{**grey, "color": {"b": 1, "c": 1, "s": 0, "t": 0}}]), 320, 180)
         self.assertLess(max(mono) - min(mono), 12, f"no saturation: the green square turns grey {mono}")
+        # (compared with the plain export: how pure the green comes out depends on the ffmpeg version)
+        square = pixel(export([grey]), 320, 180)
         inverted = pixel(export([{**grey, "lut": str(luts / "invert.cube")}]), 320, 180)
-        self.assertTrue(near(inverted, (255, 0, 255), 60), f"the LUT inverts green to magenta: {inverted}")
+        self.assertTrue(near(inverted, tuple(255 - x for x in square), 40), f"the LUT inverts: {square} → {inverted}")
         outside = pixel(export([{**grey, "lut": "/etc/passwd"}]), 320, 180)
-        self.assertTrue(near(outside, (0, 255, 0), 60), "a LUT from anywhere else is ignored")
+        self.assertTrue(near(outside, square, 20), "a LUT from anywhere else is ignored")
         # Green screen: over a red clip, the green square becomes see-through, the grey stays.
         keyed = export([{**grey, "id": 2, "src": ids["redback.mp4"]},
                         {**grey, "track": 2, "key": {"on": True, "color": "#00ff00", "sim": 0.2, "blend": 0.05}}])
