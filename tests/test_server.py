@@ -65,6 +65,24 @@ class CutlineServer(unittest.TestCase):
         bin_dir.mkdir()
         (bin_dir / "cuore").write_text("#!/bin/sh\necho 'Test Mono'\n")
         (bin_dir / "cuore").chmod(0o755)
+        # A stand-in whisper.cpp: notes what it was given, prints progress, answers like whisper-cli -oj.
+        cls.fake_whisper_log = tmp / "whisper-heard.json"
+        (bin_dir / "whisper-cli").write_text(f"""#!{sys.executable}
+import json, sys, wave
+a = sys.argv
+wav, out = a[a.index("-f") + 1], a[a.index("-of") + 1]
+with wave.open(wav) as w:
+    heard = {{"rate": w.getframerate(), "channels": w.getnchannels(), "seconds": w.getnframes() / w.getframerate()}}
+open({str(cls.fake_whisper_log)!r}, "w").write(json.dumps(heard))
+for p in (0, 50, 100):
+    print(f"whisper_print_progress_callback: progress = {{p}}%", file=sys.stderr)
+words = [(100, 400, " Hello"), (450, 900, " there."), (2000, 2500, " [Music]")]
+json.dump({{"transcription": [{{"offsets": {{"from": f, "to": t}}, "text": w}} for f, t, w in words]}}, open(out + ".json", "w"))
+""")
+        (bin_dir / "whisper-cli").chmod(0o755)
+        models = tmp / "data" / "cutline" / "models"
+        models.mkdir(parents=True)
+        (models / "ggml-test.bin").write_bytes(b"0" * (2 << 20))
         env = {**os.environ, "XDG_DATA_HOME": str(tmp / "data"), "XDG_CACHE_HOME": str(tmp / "cache"),
                "CUTLINE_VIDEOS": str(cls.videos), "CUTLINE_NO_BROWSER": "1", "PYTHONDONTWRITEBYTECODE": "1",
                "CUTLINE_DOWNLOADS": str(tmp / "Downloads"), "CUTLINE_PICTURES": str(tmp / "Pictures"),
@@ -748,6 +766,74 @@ class CutlineServer(unittest.TestCase):
                         {**grey, "track": 2, "key": {"on": True, "color": "#00ff00", "sim": 0.2, "blend": 0.05}}])
         self.assertTrue(near(pixel(keyed, 320, 180), (255, 0, 0), 50), f"red shows through: {pixel(keyed, 320, 180)}")
         self.assertTrue(near(pixel(keyed, 40, 40), (128, 128, 128), 30), "the grey isn't keyed")
+    def test_9l_silences_ducking_thumbnail_and_captions(self):
+        v = self.videos
+        # tone, 1 s of silence, tone
+        ffmpeg("-f", "lavfi", "-i", "sine=f=1000:d=1", "-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono:d=1",
+               "-f", "lavfi", "-i", "sine=f=1000:d=1", "-filter_complex", "[0][1][2]concat=n=3:v=0:a=1", str(v / "pause.wav"))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=1", "-f", "lavfi", "-i",
+               f"color=c=blue:s=640x360:r={FPS}:d=2", "-filter_complex", "[0][1]concat=n=2:v=1", "-c:v", "libx264",
+               "-pix_fmt", "yuv420p", str(v / "redthenblue.mp4"))
+        ffmpeg("-f", "lavfi", "-i", "sine=f=200:d=3", "-af", "volume=0.5", str(v / "music.wav"))
+        self.json("/api/new", {"path": str(v / "redthenblue.mp4")})
+        for name in ("pause.wav", "music.wav"):
+            self.json("/api/addsource", {"path": str(v / name)})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+
+        found = self.json("/api/silences", {"src": ids["pause.wav"], "in": 0, "out": 3, "noise": -40, "least": 0.4})["silences"]
+        self.assertEqual(len(found), 1, found)
+        self.assertAlmostEqual(found[0][0], 1, delta=0.1)
+        self.assertAlmostEqual(found[0][1], 2, delta=0.1)
+
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2, 3)]
+        picture = {"id": 1, "src": ids["redthenblue.mp4"], "track": 1, "start": 0, "in": 0, "out": 3, "layout": "full", "size": 0.3}
+        voice = {"id": 2, "src": ids["pause.wav"], "track": 2, "start": 0, "in": 0, "out": 3, "layout": "full", "size": 0.3}
+        music = {"id": 3, "src": ids["music.wav"], "track": 3, "start": 0, "in": 0, "out": 3, "layout": "full", "size": 0.3}
+
+        def music_level(out, start):              # how loud the 200 Hz music is over 0.6 s
+            stats = subprocess.run(["ffmpeg", "-ss", f"{start}", "-t", "0.6", "-i", out, "-af",
+                                    "lowpass=f=300,lowpass=f=300,astats=metadata=0", "-f", "null", "-"],
+                                   capture_output=True, text=True).stderr
+            return float(re.findall(r"RMS level dB: (-?[\d.]+|-inf)", stats)[-1])
+
+        plain = self.export({**project, "clips": [picture, voice, music]})
+        ducked = self.export({**project, "clips": [picture, voice, {**music, "duck": True}]})
+        for state in (plain, ducked):
+            self.assertEqual(state["state"], "done", state["error"])
+        quiet_part, talking = music_level(ducked["output"], 1.2), music_level(ducked["output"], 0.2)
+        self.assertGreater(quiet_part - talking, 6, f"ducked: {talking} dB while talking, {quiet_part} dB in the pause")
+        self.assertLess(abs(music_level(plain["output"], 0.2) - music_level(plain["output"], 1.2)), 2, "not ducked: steady")
+
+        # The thumbnail: the frame at 1.5 s (blue), as a PNG
+        self.json("/api/export", {"project": {**project, "clips": [picture]}, "frameAt": 1.5})
+        deadline = time.time() + 60
+        while (state := self.json("/api/export"))["state"] == "running":
+            self.assertLess(time.time(), deadline)
+            time.sleep(0.3)
+        self.assertEqual((state["state"], state["kind"]), ("done", "thumbnail"), state["error"])
+        self.assertTrue(state["output"].endswith("-thumbnail.png"))
+        rgb = subprocess.run(["ffmpeg", "-v", "error", "-i", state["output"], "-vf", "crop=1:1:320:180", "-f", "rawvideo",
+                              "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+        self.assertTrue(rgb[2] > 200 and rgb[0] < 60, f"the frame at 1.5 s is blue: {tuple(rgb)}")
+
+        # Captions, with a stand-in whisper.cpp (the real one is checked by hand): it has to get a
+        # 16 kHz mono file of the voices and answer with words and their times.
+        status = self.json("/api/captions")
+        self.assertTrue(status["whisper"] and status["models"], status)
+        self.json("/api/captions", {"project": {**project, "clips": [picture, voice, {**music, "duck": True}]}})
+        deadline = time.time() + 60
+        while (state := self.json("/api/export"))["state"] == "running":
+            self.assertLess(time.time(), deadline)
+            time.sleep(0.3)
+        self.assertEqual(state["state"], "done", state["error"])
+        self.assertEqual([w["w"] for w in state["result"]], ["Hello", "there."], "[Music] is left out")
+        self.assertEqual(state["result"][0]["t0"], 0.1)
+        heard = json.loads((self.fake_whisper_log).read_text())
+        self.assertEqual((heard["rate"], heard["channels"]), (16000, 1))
+        self.assertAlmostEqual(heard["seconds"], 3, delta=0.1)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

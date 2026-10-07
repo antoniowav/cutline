@@ -93,6 +93,11 @@ DOWNLOADS = user_dir("DOWNLOAD", "CUTLINE_DOWNLOADS", "Downloads")   # the media
 MEDIA = VIDEOS / "Cutline media"   # where dropped files and GIFs dragged from the web are kept
 LUT_DIRS = (VIDEOS / "LUTs", DOWNLOADS, xdg_dir("XDG_DATA_HOME", ".local/share") / "cutline/luts")   # .cube files
 MAX_LUT = 20 << 20
+MODELS = xdg_dir("XDG_DATA_HOME", ".local/share") / "cutline/models"   # whisper.cpp models (ggml-*.bin)
+# The model offered for download: small, quantised. A good balance of accuracy and speed on a laptop.
+MODEL_NAME = "ggml-small-q5_1.bin"
+MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + MODEL_NAME
+WHISPER_BINS = ("whisper-cli", "whisper-cpp", "whisper.cpp")
 MAX_UPLOAD = 2 << 30               # a dropped file: up to 2 GB
 MAX_FETCH = 200 << 20              # a GIF or sound dragged from a web page: up to 200 MB
 STILL_LEN = 5.0                    # how long a photo or sticker stays on screen when added
@@ -381,6 +386,52 @@ def list_luts():
             for f in sorted(set(files), key=lambda f: f.stem.lower())]
 
 
+def whisper_bin():
+    return next((shutil.which(b) for b in WHISPER_BINS if shutil.which(b)), None)
+
+
+def whisper_models():
+    """whisper.cpp models found: Cutline's own folder first, then where packages put them."""
+    dirs = [MODELS, Path("/usr/share/whisper.cpp/models"), Path("/usr/share/whisper-cpp/models"),
+            Path("/usr/local/share/whisper.cpp/models")]
+    found = []
+    for d in dirs:
+        if d.is_dir():
+            found += sorted(f for f in d.glob("ggml-*.bin") if f.is_file() and f.stat().st_size > 1 << 20
+                            and "silero" not in f.name)
+    return found
+
+
+def find_silences(path, start, end, noise=-35.0, least=0.5):
+    """Quiet stretches in a file between start and end (seconds in the file), as [[from, to], ...]."""
+    out = subprocess.run(["ffmpeg", "-nostats", "-hide_banner", "-ss", f"{start:.4f}", "-t", f"{end - start:.4f}",
+                          "-i", str(path), "-vn", "-af", f"silencedetect=noise={noise:.1f}dB:d={least:.3f}",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=600).stderr
+    found, begin = [], None
+    for line in out.splitlines():
+        if m := re.search(r"silence_start: (-?[\d.]+)", line):
+            begin = max(0.0, float(m.group(1)))
+        elif (m := re.search(r"silence_end: (-?[\d.]+)", line)) and begin is not None:
+            found.append([start + begin, start + float(m.group(1))])
+            begin = None
+    if begin is not None:                          # quiet right to the end
+        found.append([start + begin, end])
+    return found
+
+
+def caption_words(file):
+    """whisper.cpp's JSON (one word per segment) as [{t0, t1, w}], skipping [music]-style notes."""
+    data = json.loads(Path(file).read_text(errors="replace"))
+    words = []
+    for seg in data.get("transcription", []):
+        text = str(seg.get("text", "")).strip()
+        if not text or re.fullmatch(r"[\[(*♪].*[\])*♪]", text):
+            continue
+        off = seg.get("offsets", {})
+        words.append({"t0": int(off.get("from", 0)) / 1000, "t1": int(off.get("to", 0)) / 1000, "w": text})
+    return words
+
+
 def eased(keys, field, T):
     """A keyframed value as an ffmpeg expression over T (seconds into the clip): eased in and
     out between keys (smoothstep), held before the first and after the last. The editor's
@@ -517,7 +568,9 @@ def clean_clip(c):
             "trans": clean_trans(c.get("trans")),
             # colour: brightness, contrast, saturation and warmth; a .cube LUT; a green screen
             "color": clean_color(c.get("color")), "lut": str(c.get("lut") or "")[:4096],
-            "key": clean_key(c.get("key"))}
+            "key": clean_key(c.get("key")),
+            # music that gets quieter while someone speaks (ducking)
+            "duck": bool(c.get("duck"))}
 
 
 _fonts = None
@@ -823,19 +876,74 @@ class App:
         return out
 
     # ---- export ----
-    def start_export(self, project, height=None, preset=None, loudness=False):
+    def start_export(self, project, height=None, preset=None, loudness=False, frame_at=None):
         with self.lock:
             if self.busy():
                 return
             try:
-                steps, out, work = self.build_export(project, height, preset, loudness)
+                steps, out, work = self.build_export(project, height, preset, loudness, frame_at=frame_at)
             except ValueError as e:
                 self.export = {"state": "error", "progress": 0, "output": "", "error": str(e)}
                 return
-            self.export = job = {"state": "running", "progress": 0.0, "output": str(out), "error": ""}
+            kind = "thumbnail" if frame_at is not None else "export"
+            self.export = job = {"state": "running", "progress": 0.0, "output": str(out), "error": "", "kind": kind}
         threading.Thread(target=self.run_export, args=(job, steps, out, work), daemon=True).start()
 
-    def build_export(self, project, height=None, preset=None, loudness=False):
+    def start_captions(self, project, language="auto"):
+        """Auto-captions: the voices on the timeline (not music set to duck) mixed down to 16 kHz,
+        then whisper.cpp, one word per segment, with times. The words come back in the job."""
+        with self.lock:
+            if self.busy():
+                return
+            try:
+                binary, models = whisper_bin(), whisper_models()
+                if not binary:
+                    raise ValueError("Auto-captions need whisper.cpp: install it (on Arch: sudo pacman -S whisper-cpp)")
+                if not models:
+                    raise ValueError("Auto-captions need a speech model: download one first")
+                steps, wav, work = self.build_export(project, voice=True)
+                lang = language if re.fullmatch(r"auto|[a-z]{2}", str(language)) else "auto"
+                steps.append({"args": [binary, "-m", str(models[0]), "-f", str(wav), "-l", lang, "-ml", "1", "-sow",
+                                       "-oj", "-of", str(work / "words"), "-pp", "-t", str(max(2, min(8, (os.cpu_count() or 4) // 2)))],
+                              "length": 0, "weight": max(1.0, steps[0]["length"]), "percent": True,
+                              "finish": lambda job: job.update(result=caption_words(work / "words.json"))})
+            except ValueError as e:
+                self.export = {"state": "error", "progress": 0, "output": "", "error": str(e), "kind": "captions"}
+                return
+            self.export = job = {"state": "running", "progress": 0.0, "output": "", "error": "", "kind": "captions"}
+        threading.Thread(target=self.run_export, args=(job, steps, wav, work), daemon=True).start()
+
+    def start_model_download(self):
+        """Fetch the speech model once, from whisper.cpp's own page on Hugging Face."""
+        with self.lock:
+            if self.busy():
+                return
+            self.export = job = {"state": "running", "progress": 0.0, "output": str(MODELS / MODEL_NAME), "error": "",
+                                 "kind": "model"}
+
+        def fetch():
+            MODELS.mkdir(parents=True, exist_ok=True)
+            part = MODELS / f".{MODEL_NAME}.part"
+            try:
+                req = urllib.request.Request(MODEL_URL, headers={"User-Agent": f"Cutline/{VERSION}"})  # noqa: S310
+                with urllib.request.build_opener().open(req, timeout=60) as resp, open(part, "wb") as out:
+                    size, got = int(resp.headers.get("Content-Length") or 0), 0
+                    while chunk := resp.read(1 << 20):
+                        if job["state"] == "cancelled":
+                            raise ValueError("cancelled")
+                        out.write(chunk)
+                        got += len(chunk)
+                        job["progress"] = min(0.999, got / size) if size else 0.5
+                part.replace(MODELS / MODEL_NAME)
+                job.update(state="done", progress=1.0)
+            except (OSError, ValueError) as e:
+                if job["state"] != "cancelled":
+                    job.update(state="error", error=f"Couldn't download the model: {e}")
+            finally:
+                part.unlink(missing_ok=True)
+        threading.Thread(target=fetch, daemon=True).start()
+
+    def build_export(self, project, height=None, preset=None, loudness=False, frame_at=None, voice=False):
         """The export as a list of ffmpeg runs: the picture in pieces, then the sound, then the
         pieces joined with the sound. One run for the whole timeline would open every clip's
         video at once, and a long 4K edit then needs more memory than the computer has."""
@@ -904,8 +1012,9 @@ class App:
         total = total_f / FPS
         first_id = project["sources"][0]["id"] if project.get("sources") else clips[0]["src"]
         first = self.sources.get(first_id) or self.sources[clips[0]["src"]]
-        out = self.output_path(first.path.parent, project["name"], f"-{H}p" if smaller else "",
-                               ".gif" if gif else ".mp4")
+        out = (self.output_path(first.path.parent, project["name"], "-thumbnail", ".png") if frame_at is not None else
+               self.output_path(first.path.parent, project["name"], f"-{H}p" if smaller else "",
+                                ".gif" if gif else ".mp4"))
         shutil.rmtree(CACHE / "export", ignore_errors=True)   # what earlier exports left behind
         work = CACHE / "export" / secrets.token_hex(4)
         work.mkdir(parents=True)
@@ -1063,7 +1172,7 @@ class App:
                "tr": (f"W-w-W*{m}", f"W*{m}"), "bl": (f"W*{m}", f"H-h-W*{m}"),
                "br": (f"W-w-W*{m}", f"H-h-W*{m}")}
 
-        def piece(p, a, b, members, file):
+        def piece(p, a, b, members, file, still_frame=None):
             """The picture from frame a to frame b, with only this piece's clips opened."""
             vclips = sorted((c for c in members if is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
             vtexts = sorted((c for c in members if not is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
@@ -1207,6 +1316,11 @@ class App:
                     layer += 1
                 graph.append(f"[b{layer}]" + ",".join(drawtexts(c, files, font["file"], st, en, H)) + f"[b{layer + 1}]")
                 layer += 1
+            if still_frame is not None:            # a thumbnail: one frame, at most 1280 wide, as a PNG
+                graph.append(f"[b{layer}]trim=start_frame={still_frame}:end_frame={still_frame + 1},"
+                             f"scale='min(1280,iw)':-2,format=rgb24[vout]")
+                return args + ["-filter_complex", ";".join(graph), "-map", "[vout]", "-frames:v", "1",
+                               "-update", "1", "-c:v", "png", str(file)]
             graph.append(f"[b{layer}]format=yuv420p,{SDR_TAGS},trim=end_frame={b - a}"
                          + (",format=nv12,hwupload" if gpu else "") + "[vout]")
             # Every piece is encoded the same way, so they can be joined without encoding again.
@@ -1216,21 +1330,29 @@ class App:
                            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
                            "-color_range", "tv", "-threads", "6", "-frames:v", str(b - a), "-f", "mpegts", str(file)]
 
-        gpu = gpu_encoder()
+        gpu = gpu_encoder() and frame_at is None
+        if frame_at is not None:                   # just the frame at the playhead, of the piece it's in
+            F = min(max(0, frames(frame_at)), total_f - 1)
+            p, (a, b, members) = next((p, x) for p, x in enumerate(pieces) if x[0] <= F < x[1])
+            return [{"args": piece(p, a, b, members, out, F - a), "length": 0, "weight": 1}], out, work
         steps = []
-        for p, (a, b, members) in enumerate(pieces):
+        for p, (a, b, members) in enumerate(pieces) if not voice else []:
             file = work / f"{p}.ts"
             steps.append({"args": piece(p, a, b, members, file), "length": (b - a) / FPS, "weight": (b - a) / FPS})
-        (work / "pieces.txt").write_text("".join(f"file '{work / f'{p}.ts'}'\n" for p in range(len(pieces))))
+        if not voice:
+            (work / "pieces.txt").write_text("".join(f"file '{work / f'{p}.ts'}'\n" for p in range(len(pieces))))
 
         # The sound: every clip on an unmuted track, cut to the same frames, placed and mixed.
         # Only the sound of each file is read, so this run stays light however many clips there are.
         args, graph, audio = list(head), [], []
+        ducked = []                                # music that ducks under the voices
         for c in clips:
             gain = float(c.get("volume", 1))
             if tracks[c["track"]].get("muted") or gain <= 0 or not self.sources[c["src"]].info["audio"]:
                 continue
-            k, speed = len(audio), c.get("speed", 1)
+            if voice and c["duck"]:                # captions only listen to the voices
+                continue
+            k, speed = len(audio) + len(ducked), c.get("speed", 1)
             # a transition crossfades the sound as well: both clips play on over the overlap
             have, _, tail = handles(c) if is_picture(c) else (0, 0, 0)
             d = (nf[id(c)] + have + tail) / FPS
@@ -1248,10 +1370,26 @@ class App:
                          f"apad=whole_dur={d:.4f},atrim=duration={d:.4f},"
                          f"volume={gain:.3f},afade=t=in:d={fin:.3f},afade=t=out:st={max(0, d - fout):.4f}:d={fout:.3f},"
                          f"adelay={ms}|{ms}[a{k}]")
-            audio.append(f"[a{k}]")
+            (ducked if c["duck"] else audio).append(f"[a{k}]")
         graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total:.4f}[asil]")
-        graph.append(f"[asil]{''.join(audio)}amix=inputs={len(audio) + 1}:duration=first:normalize=0,"
-                     f"alimiter=limit=0.97:attack=5:release=50:level=false[aout]")
+        if ducked and audio:
+            # Ducking: the voices drive a compressor on the music, so the music drops about 12 dB
+            # while someone speaks and comes back up in the pauses.
+            graph.append(f"[asil]{''.join(audio)}amix=inputs={len(audio) + 1}:duration=first:normalize=0,asplit=2[vmix][vkey]")
+            graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total:.4f}[asil2]")
+            graph.append(f"[asil2]{''.join(ducked)}amix=inputs={len(ducked) + 1}:duration=first:normalize=0[mmix]")
+            graph.append("[mmix][vkey]sidechaincompress=threshold=0.015:ratio=8:attack=15:release=350:makeup=1[mduck]")
+            graph.append("[vmix][mduck]amix=inputs=2:duration=first:normalize=0,"
+                         "alimiter=limit=0.97:attack=5:release=50:level=false[aout]")
+        else:
+            everything = audio + ducked
+            graph.append(f"[asil]{''.join(everything)}amix=inputs={len(everything) + 1}:duration=first:normalize=0,"
+                         f"alimiter=limit=0.97:attack=5:release=50:level=false[aout]")
+        if voice:                                  # for whisper: 16 kHz mono
+            wav = work / "voice.wav"
+            return ([{"args": args + ["-filter_complex", ";".join(graph), "-map", "[aout]", "-ac", "1", "-ar", "16000",
+                                      "-c:a", "pcm_s16le", "-t", f"{total:.4f}", str(wav)],
+                      "length": total, "weight": total / 20}], wav, work)
         sound = work / "sound.m4a"
         aac = ["-c:a", "aac", "-b:a", preset.get("audio", "192k"), "-t", f"{total:.4f}", str(sound)]
         if gif:
@@ -1310,7 +1448,13 @@ class App:
                                         stderr=subprocess.PIPE, text=True)
                 self.export_proc = proc
                 err = []
-                reader = threading.Thread(target=lambda p=proc, e=err: e.extend(p.stderr), daemon=True)
+
+                def read_errors(p=proc, e=err, step=step, base=done):
+                    for line in p.stderr:
+                        e.append(line)
+                        if step.get("percent") and (m := re.search(r"progress\s*=\s*(\d+)%", line)):
+                            job["progress"] = min(0.999, (base + step["weight"] * int(m.group(1)) / 100) / whole)
+                reader = threading.Thread(target=read_errors, daemon=True)
                 reader.start()
                 for line in proc.stdout:
                     m = re.match(r"out_time_us=(\d+)", line)
@@ -1327,6 +1471,12 @@ class App:
                     break
                 done += step["weight"]
                 told = "".join(err)                # what this run printed, for a step built from it
+                if step.get("finish"):
+                    try:
+                        step["finish"](job)
+                    except (OSError, ValueError, KeyError, TypeError) as e:
+                        job.update(state="error", error=f"Couldn't read the result: {e}")
+                        break
             else:
                 if job["state"] != "cancelled":
                     job.update(state="done", progress=1.0)
@@ -1586,6 +1736,10 @@ def handler_for(app: App):
                 return self.send_json({"videos": list_videos(audio=True), "videosDir": home_label(VIDEOS)})
             if p == "/api/export":
                 return self.send_json(app.export)
+            if p == "/api/captions":
+                models = whisper_models()
+                return self.send_json({"whisper": whisper_bin(), "models": [m.name for m in models],
+                                       "download": MODEL_NAME, "downloadMB": 190})
             if p == "/api/luts":
                 return self.send_json({"luts": list_luts(), "folder": home_label(LUT_DIRS[0])})
             if p == "/api/lut":
@@ -1721,9 +1875,25 @@ def handler_for(app: App):
                     return self.send_json({"ok": True, "url": url})
                 if self.path == "/api/export":
                     height = body.get("height") or (1080 if body.get("scale1080") else None)
+                    frame_at = num(body["frameAt"], 0, 1e6) if body.get("frameAt") is not None else None
                     app.start_export(body.get("project") or app.load(), height, body.get("preset"),
-                                     bool(body.get("loudness")))
+                                     bool(body.get("loudness")), frame_at)
                     return self.send_json(app.export)
+                if self.path == "/api/captions":
+                    app.start_captions(body.get("project") or app.load(), body.get("language", "auto"))
+                    return self.send_json(app.export)
+                if self.path == "/api/model/download":
+                    app.start_model_download()
+                    return self.send_json(app.export)
+                if self.path == "/api/silences":
+                    src = app.sources.get(str(body.get("src", "")))
+                    if not src or not src.info["audio"]:
+                        return self.send_json({"error": "That clip has no sound"}, 400)
+                    start, end = num(body.get("in", 0), 0, 1e6), num(body.get("out", 0), 0, 1e6)
+                    if end - start < 0.1:
+                        return self.send_json({"silences": []})
+                    return self.send_json({"silences": find_silences(src.path, start, end, num(body.get("noise", -35), -80, -5),
+                                                                     num(body.get("least", 0.5), 0.1, 10))})
                 if self.path == "/api/export/cancel":
                     app.cancel_export()
                     return self.send_json({"ok": True})

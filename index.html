@@ -69,6 +69,16 @@
   #colourPanel .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   #colourPanel hr { border:0; border-top:1px solid var(--bg3); margin:2px 0; width:100%; }
   #keyHex { width:76px; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px; padding:2px 4px; }
+  #soundTools { display:flex; align-items:center; gap:8px; position:relative; }
+  #silencePanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
+    border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
+  #silencePanel.open { display:flex; }
+  #silencePanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #ccPanel { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:12; align-items:center; justify-content:center; }
+  #ccPanel.open { display:flex; }
+  #ccPanel .panel { background:var(--bg); border:1px solid var(--accent); width:min(460px, 92vw); padding:14px; display:flex;
+    flex-direction:column; gap:10px; white-space:normal; }
+  #ccPanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
   #box canvas.gl { position:absolute; display:none; pointer-events:none; }
   #stage.picking, #stage.picking * { cursor:crosshair !important; }
   #motionPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
@@ -145,10 +155,11 @@
   <button id="textBtn" title="Add a title or caption at the playhead (T)">＋ Text</button>
   <select id="tplSel" title="Add a ready-made title at the playhead">
     <option value="">＋ Title</option><option value="title">Big title</option><option value="lower">Lower third</option>
-    <option value="subscribe">Subscribe</option><option value="chapter">Chapter</option></select>
+    <option value="subscribe">Subscribe</option><option value="chapter">Chapter</option><option value="cc">Auto captions…</option></select>
   <button id="drawerBtn" title="GIFs, stickers and sound effects: find them in your browser, they show up here">GIFs &amp; SFX</button>
   <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option>
-    <option value="small" title="720p, a smaller file">Small file</option><option value="gif" title="480p, 15 fps, no sound">GIF</option></select>
+    <option value="small" title="720p, a smaller file">Small file</option><option value="gif" title="480p, 15 fps, no sound">GIF</option>
+    <option value="thumb" title="The frame at the playhead, titles and all, as a PNG (1280 wide)">Thumbnail</option></select>
   <label class="muted" title="Make the export as loud as YouTube, TikTok and Spotify play it (-14 LUFS), so it's not too quiet or too loud"><input id="loud" type="checkbox"> Loudness</label>
   <button class="primary" id="exportBtn">Export</button>
 </header>
@@ -252,6 +263,16 @@
       <span id="fadeOutWord">out</span> <input id="fadeOut" type="number" min="0" max="30" step="0.1" value="0"> s</label>
   </span>
   <label class="muted" id="volTools" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
+  <span id="soundTools" style="display:none">
+    <label class="muted" id="duckLabel" title="Music gets about 12 dB quieter while someone speaks, and comes back in the pauses"><input id="duck" type="checkbox"> Duck under voice</label>
+    <button id="silenceBtn" title="Find the pauses in the selected clips and cut them out">✂ Silences</button>
+    <span id="silencePanel">
+      <label class="muted" title="Quieter than this counts as a pause">Quieter than <span><input id="sLevel" type="range" min="-60" max="-20" step="1" value="-38"> <span id="sLevelVal">-38 dB</span></span></label>
+      <label class="muted" title="Shorter pauses are kept">Pauses longer than <span><input id="sLeast" type="range" min="2" max="20" step="1" value="5"> <span id="sLeastVal">0.5 s</span></span></label>
+      <label class="muted" title="A little of each pause is kept, so cuts don't clip words">Keep around words <span><input id="sKeep" type="range" min="0" max="30" step="1" value="10"> <span id="sKeepVal">0.10 s</span></span></label>
+      <button id="silenceGo" class="primary">Cut the pauses</button>
+    </span>
+  </span>
 </div>
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
@@ -278,6 +299,20 @@
   <span class="muted" style="white-space:normal">Download a GIF or sound, or drag one from a web page onto Cutline: it shows up here. Click to add it at the playhead.</span></div>
   <ul id="drawerList"></ul></div>
 <svg width="0" height="0" style="position:absolute"><defs id="filters"></defs></svg>
+<div id="ccPanel"><div class="panel">
+  <b>Auto captions</b>
+  <span class="muted">whisper.cpp listens to the voices on the timeline (music set to duck is left out) and writes
+    captions as text clips on a new track, to edit like any title. It all happens on this computer.</span>
+  <span id="ccStatus" class="muted"></span>
+  <button id="ccDownload" style="display:none"></button>
+  <label class="muted">Captions <select id="ccMode"><option value="phrases">A few words at a time</option><option value="words">One word at a time (Shorts)</option></select></label>
+  <label class="muted">Look <select id="ccLook"><option value="youtube">YouTube bold</option><option value="subtitle">Subtitle</option>
+    <option value="punch">Yellow punch</option><option value="highlight">Highlighter</option></select></label>
+  <label class="muted">Language <select id="ccLang"><option value="auto">Detect it</option><option value="en">English</option><option value="it">Italian</option>
+    <option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="pt">Portuguese</option>
+    <option value="nl">Dutch</option></select></label>
+  <span class="row" style="display:flex; gap:8px; justify-content:flex-end"><button id="ccClose">Close</button><button id="ccGo" class="primary">Make captions</button></span>
+</div></div>
 <div id="dropHint">Drop to add at the playhead</div>
 <div id="toast"></div>
 
@@ -398,11 +433,24 @@ function ensureAudio() {
   if (!actx) { actx = new AudioContext(); for (const id of Object.keys(vids)) wire(id); }
   if (actx.state === "suspended") actx.resume();
 }
+// Ducking in the preview, close to the export's compressor: while any voice (a sounding clip
+// not set to duck) is above a whisper at the playhead, ducked music goes down to a quarter.
+let duckLevel = 1;
+function voiceAt(x) {
+  return P.tracks.some(tr => {
+    const c = !tr.muted && clipAt(tr.id, x), pk = c && !c.duck && vol(c) > 0 && S[c.src]?.peaks;
+    if (!pk) return false;
+    const i = Math.floor(srcAt(c, x) / pk.step);
+    return Math.max(pk.peaks[i] || 0, pk.peaks[i + 1] || 0) * vol(c) > 0.08;
+  });
+}
 function applyGains() {
+  const want = P.clips.some(c => c.duck) && voiceAt(t) ? 0.25 : 1;
+  duckLevel += (want - duckLevel) * (want < duckLevel ? 0.5 : 0.08);         // quick down, slow back up
   for (const tr of P.tracks) {
     const g = gains[tr.id]; if (!g) continue;
     const c = clipAt(tr.id, t);
-    g.gain.value = tr.muted || !c ? 0 : vol(c) * fadeAt(c, t);
+    g.gain.value = tr.muted || !c ? 0 : vol(c) * fadeAt(c, t) * (c.duck ? duckLevel : 1);
   }
 }
 function buildVideos() {
@@ -868,6 +916,10 @@ function showInspector() {
   const fades = !!one;                                 // titles, sound and (now) pictures fade
   const vid = one && !text && !isAudio(one);
   $("motionBtn").disabled = !vid; if (!vid) $("motionPanel").classList.remove("open");
+  const sounding = P.clips.filter(c => selected.has(c.id) && !isText(c) && S[c.src]?.audio);
+  $("soundTools").style.display = sounding.length ? "flex" : "none";
+  if (!sounding.length) $("silencePanel").classList.remove("open");
+  $("duckLabel").style.display = one && isAudio(one) ? "" : "none"; if (one) $("duck").checked = !!one.duck;
   const vids_ = selVideos(); $("colourBtn").disabled = !vids_.length;
   if (!vids_.length) $("colourPanel").classList.remove("open"); else showColour(vids_[0]);
   $("speed").disabled = !one || text; if (one && !text) $("speed").value = String(spd(one));
@@ -1226,7 +1278,123 @@ function addTemplate(kind) {
   $("textInput").value = selText()?.text ?? "";     // even if the box had the focus already
   $("textInput").focus(); $("textInput").select();
 }
-$("tplSel").onchange = () => { addTemplate($("tplSel").value); $("tplSel").value = ""; };
+$("tplSel").onchange = () => {
+  if ($("tplSel").value === "cc") { $("ccPanel").classList.add("open"); refreshCC(); } else addTemplate($("tplSel").value);
+  $("tplSel").value = ""; };
+
+// ---------- sound: ducking and the silence cutter ----------
+$("duck").onchange = () => { const cs = P.clips.filter(c => selected.has(c.id) && isAudio(c));
+  change(() => { for (const c of cs) { if ($("duck").checked) c.duck = true; else delete c.duck; } }); };
+$("silenceBtn").onclick = (e) => { e.stopPropagation(); $("silencePanel").classList.toggle("open"); };
+$("silencePanel").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => $("silencePanel").classList.remove("open"));
+const silenceOpts = () => ({ noise: +$("sLevel").value, least: $("sLeast").value / 10, keep: $("sKeep").value / 100 });
+for (const id of ["sLevel", "sLeast", "sKeep"]) $(id).oninput = () => { const o = silenceOpts();
+  $("sLevelVal").textContent = `${o.noise} dB`; $("sLeastVal").textContent = `${o.least.toFixed(1)} s`; $("sKeepVal").textContent = `${o.keep.toFixed(2)} s`; };
+// The parts of a clip worth keeping, in its source's time: everything but the pauses, each
+// pause shrunk by "keep" on both sides so no word is clipped.
+function keptParts(c, silences, keep) {
+  const parts = []; let from = c.in;
+  for (const [a, b] of silences) {
+    const s = Math.max(c.in, a + keep), e = Math.min(c.out, b - keep);
+    if (e - s < 0.05) continue;
+    if (s - from > 0.05) parts.push([from, s]);
+    from = e;
+  }
+  if (c.out - from > 0.05) parts.push([from, c.out]);
+  return parts;
+}
+// Cut the pauses out of the selected clips: each becomes its parts, side by side, and
+// everything after it on its track moves up by what was taken out.
+async function cutSilences() {
+  const o = silenceOpts(), cs = P.clips.filter(c => selected.has(c.id) && !isText(c) && S[c.src]?.audio);
+  if (!cs.length) return toast("Select clips with sound");
+  $("silencePanel").classList.remove("open"); toast("Listening for pauses…", 60000);
+  const found = {};
+  for (const c of cs) {
+    const r = await (await fetch("/api/silences", { method: "POST", body: JSON.stringify({ src: c.src, in: c.in, out: c.out, noise: o.noise, least: o.least }) })).json();
+    if (r.error) return toast(r.error);
+    found[c.id] = r.silences;
+  }
+  let removed = 0;
+  change(() => {
+    const fresh = [];
+    for (const c of [...cs].sort((a, b) => b.start - a.start)) {            // the last first, so moves don't add up wrong
+      const parts = keptParts(c, found[c.id], o.keep);
+      if (parts.length === 1 && parts[0][0] === c.in && parts[0][1] === c.out) { fresh.push(c.id); continue; }
+      const oldEnd = end(c); let at = c.start, id = nextId();
+      P.clips = P.clips.filter(x => x !== c);
+      parts.forEach(([a, b], i) => {
+        const part = { ...JSON.parse(JSON.stringify(c)), id: id++, start: at, in: a, out: b };
+        delete part.keys; if (i) delete part.trans;
+        P.clips.push(part); fresh.push(part.id); at = end(part);
+      });
+      removed += oldEnd - at;
+      shiftAfter(c.track, oldEnd, oldEnd - at);
+    }
+    selected = new Set(fresh);
+  });
+  toast(removed > 0.05 ? `Cut ${fmt(removed)} of pauses` : "No pauses found: try a higher level or shorter pauses", 4000);
+}
+$("silenceGo").onclick = cutSilences;
+
+// ---------- auto captions ----------
+async function refreshCC() {
+  const d = await (await fetch("/api/captions")).json();
+  const ready = d.whisper && d.models.length;
+  $("ccStatus").textContent = !d.whisper ? "whisper.cpp isn't installed. On Arch: sudo pacman -S whisper-cpp (elsewhere: whisper.cpp from your package manager)."
+    : !d.models.length ? `whisper.cpp is ready; it needs a speech model (${d.download}, about ${d.downloadMB} MB, downloaded once from whisper.cpp's page on Hugging Face).`
+    : `Ready: ${d.models[0]}`;
+  $("ccDownload").style.display = d.whisper && !d.models.length ? "" : "none";
+  $("ccDownload").textContent = `Download the model (${d.downloadMB} MB)`;
+  $("ccGo").disabled = !ready;
+}
+$("ccDownload").onclick = async () => {
+  const r = await (await fetch("/api/model/download", { method: "POST", body: "{}" })).json();
+  if (r.state === "error") return toast(r.error, 6000);
+  watchExport();
+};
+$("ccClose").onclick = () => $("ccPanel").classList.remove("open");
+$("ccPanel").onclick = (e) => { if (e.target.id === "ccPanel") $("ccPanel").classList.remove("open"); };
+$("ccGo").onclick = async () => {
+  await save(true);
+  const r = await (await fetch("/api/captions", { method: "POST", body: JSON.stringify({ project: P, language: $("ccLang").value }) })).json();
+  if (r.state === "error") return toast(r.error, 6000);
+  $("ccPanel").classList.remove("open"); watchExport();
+};
+// Words into captions: a few words at a time (broken at pauses, sentence ends and length),
+// or one word at a time. Each caption holds until the next when the gap is short.
+function captionChunks(words, mode) {
+  let out = [];
+  if (mode === "words") out = words.map(w => ({ t0: w.t0, t1: w.t1, text: w.w }));
+  else {
+    let cur = null;
+    for (const w of words) {
+      const gap = cur ? w.t0 - cur.t1 : 0;
+      if (!cur || gap > 0.6 || /[.!?]$/.test(cur.text) || cur.n >= 5 || (cur.text + " " + w.w).length > 28) {
+        if (cur) out.push(cur); cur = { t0: w.t0, t1: w.t1, text: w.w, n: 1 };
+      } else { cur.text += " " + w.w; cur.t1 = w.t1; cur.n++; }
+    }
+    if (cur) out.push(cur);
+  }
+  out.forEach((c, i) => { const nx = out[i + 1];
+    c.t1 = Math.max(c.t1, c.t0 + (mode === "words" ? 0.2 : 0.5));
+    if (nx && nx.t0 - c.t1 < 0.4) c.t1 = nx.t0; if (nx) c.t1 = Math.min(c.t1, nx.t0); });
+  return out.filter(c => c.t1 - c.t0 > 0.04);
+}
+function makeCaptions(words) {
+  const mode = $("ccMode").value, look = LOOKS[$("ccLook").value] || LOOKS.youtube, chunks = captionChunks(words, mode);
+  if (!chunks.length) return toast("No speech found to caption", 5000);
+  change(() => {
+    const tr = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: "CC", hidden: false, muted: false };
+    P.tracks.push(tr);
+    let id = nextId();
+    for (const c of chunks) P.clips.push({ id: id++, kind: "text", src: "", track: tr.id, start: c.t0, in: 0, out: c.t1 - c.t0,
+      text: c.text, x: 0.5, y: mode === "words" ? 0.5 : 0.8, tsize: mode === "words" ? 0.1 : 0.065, color: "#ffffff", bold: true, bg: false,
+      ...look, ...(mode === "words" ? { animIn: "pop", fadeIn: 0.12, animOut: "none" } : { animIn: "fade", fadeIn: 0.08, animOut: "fade", fadeOut: 0.08 }) });
+  });
+  resizeTimeline(); toast(`${chunks.length} captions on a new CC track: click one to fix a word`, 5000);
+}
 
 // ---------- the colour panel: applies to every selected video ----------
 const LOOKS_COLOR = { natural: NO_COLOR, warm: { t: 0.5, s: 1.1 }, cool: { t: -0.5 }, vivid: { s: 1.4, c: 1.15 },
@@ -1906,8 +2074,9 @@ $("exportBtn").onclick = async () => {
   if (cur.state === "running") { if (confirm("Cancel the export?")) fetch("/api/export/cancel", { method: "POST" }); return; }
   if ($("quality").value === "gif" && total() > 60 && !confirm(`A ${Math.round(total())} s GIF will be a very big file. Export it anyway?`)) return;
   await save(true);
+  const thumb = $("quality").value === "thumb";
   const r = await (await fetch("/api/export", { method: "POST",
-    body: JSON.stringify({ project: P, height: Number($("quality").value) || null,
+    body: JSON.stringify({ project: P, height: Number($("quality").value) || null, frameAt: thumb ? t : null,
       preset: ["small", "gif"].includes($("quality").value) ? $("quality").value : null, loudness: $("loud").checked }) })).json();
   if (r.state === "error") return toast(r.error, 6000);
   watchExport();
@@ -1917,11 +2086,15 @@ function watchExport() {
   polling = setInterval(async () => {
     const s = await (await fetch("/api/export")).json();
     $("progress").firstElementChild.style.width = `${Math.round(s.progress * 100)}%`;
-    $("status").textContent = s.state === "running" ? `Exporting ${Math.round(s.progress * 100)}%` : "";
+    const doing = { captions: "Listening", model: "Downloading the model" }[s.kind] || "Exporting";
+    $("status").textContent = s.state === "running" ? `${doing} ${Math.round(s.progress * 100)}%` : "";
     if (s.state === "running") return;
     clearInterval(polling); $("progress").style.display = "none"; $("exportBtn").textContent = "Export";
-    if (s.state === "done") { $("status").textContent = "Exported ✓"; toast(`Saved ${s.output.split("/").pop()}`, 6000); fetch("/api/reveal", { method: "POST" }); }
-    else if (s.state === "error") toast(`Export failed:\n${s.error}`, 9000);
+    if (s.state === "done" && s.kind === "captions") { makeCaptions(s.result || []); return; }
+    if (s.state === "done" && s.kind === "model") { toast("Model ready: captions can be made now"); refreshCC(); return; }
+    if (s.state === "done") { $("status").textContent = s.kind === "thumbnail" ? "Thumbnail ✓" : "Exported ✓";
+      toast(`Saved ${s.output.split("/").pop()}`, 6000); fetch("/api/reveal", { method: "POST" }); }
+    else if (s.state === "error") toast(`${s.kind === "captions" ? "Captions" : s.kind === "model" ? "Download" : "Export"} failed:\n${s.error}`, 9000);
   }, 500);
 }
 
