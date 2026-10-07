@@ -27,6 +27,8 @@ original files.
 - **Copy and paste**: Ctrl+C / Ctrl+X / Ctrl+V anything selected, even into another project; **Alt**-drag drops a copy.
 - **Markers**: **M** at the playhead, **[** / **]** to jump; clips snap to them.
 - **Detach audio** onto its own clip, and **crop** or **turn** any clip's picture.
+- **Speed, zoom and keyframes**: 0.25–4x with the pitch kept, punch-ins (**Z**), Ken Burns, and keyframed zoom, focus and position.
+- **Transitions**: crossfade, dip to black, slide, wipe, circle and zoom, with the sound crossfading along.
 - **Any shape**: 16:9, 9:16 for Shorts/TikTok/Reels, 1:1 or 4:5; **Fill** a tall frame with a wide video, or fill the bars with a **blurred** copy of it.
 - **Export presets**: sizes from 720p up, a small file, a GIF, and **loudness** normalised to -14 LUFS.
 - **Picture-in-picture**: put any clip full screen or in a corner, at 10–70 % size.

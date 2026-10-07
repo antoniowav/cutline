@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.5.0"
+VERSION = "0.6.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -302,6 +302,72 @@ def clean_crop(crop):
     return {side: num(crop.get(side, 0), 0, 0.45) for side in "ltrb"}
 
 
+TRANSITIONS = {"fade": "fade", "dip": "fadeblack", "slide": "slideleft", "wipe": "wipeleft",
+               "circle": "circleopen", "zoom": "zoomin"}       # Cutline's name: ffmpeg xfade's
+KEY_FIELDS = ("zoom", "fx", "fy", "x", "y")
+
+
+def clean_keys(keys, c):
+    """Keyframes: zoom, focus and (for a free clip) position at t seconds into the clip.
+    Between two keys the value eases in and out; before the first and after the last it holds."""
+    if not isinstance(keys, list):
+        return []
+    box = c.get("box") if isinstance(c.get("box"), dict) else {}
+    out = []
+    for k in keys[:64]:
+        if not isinstance(k, dict):
+            continue
+        out.append({"t": num(k.get("t", 0), 0, 1e6), "zoom": num(k.get("zoom", 1), 1, 4),
+                    "fx": num(k.get("fx", 0.5), 0, 1), "fy": num(k.get("fy", 0.5), 0, 1),
+                    "x": num(k.get("x", box.get("x", 0)), -1, 1), "y": num(k.get("y", box.get("y", 0)), -1, 1)})
+    return sorted(out, key=lambda k: k["t"])
+
+
+def clean_trans(trans):
+    """How a clip comes in from the clip right before it on its track."""
+    if not isinstance(trans, dict) or trans.get("type") not in TRANSITIONS:
+        return None
+    return {"type": trans["type"], "dur": num(trans.get("dur", 0.5), 0.1, 3)}
+
+
+def eased(keys, field, T):
+    """A keyframed value as an ffmpeg expression over T (seconds into the clip): eased in and
+    out between keys (smoothstep), held before the first and after the last. The editor's
+    valueAt() computes the same."""
+    expr = f"{keys[-1][field]:.5f}"
+    for a, b in reversed(list(zip(keys, keys[1:], strict=False))):
+        p = f"((({T})-{a['t']:.4f})/{max(b['t'] - a['t'], 1e-3):.4f})"
+        expr = (f"if(lt({T},{b['t']:.4f}),{a[field]:.5f}+{b[field] - a[field]:.5f}*{p}*{p}*(3-2*{p}),{expr})")
+    return f"if(lt({T},{keys[0]['t']:.4f}),{keys[0][field]:.5f},{expr})"
+
+
+def moves(c, *fields):
+    """Whether keyframes change any of these values over the clip."""
+    return len(c.get("keys") or []) > 1 and any(len({k[f] for k in c["keys"]}) > 1 for f in fields)
+
+
+def held(c, field):
+    """A value that doesn't move: the clip's own, or the keyframes' one value."""
+    keys = c.get("keys") or []
+    if keys:
+        return keys[0][field]
+    return c["box"][field] if field in ("x", "y") else c[field]
+
+
+def atempo(speed):
+    """atempo only takes 0.5 to 2 at a time on older ffmpeg: chain it."""
+    parts = []
+    while speed > 2:
+        parts.append("atempo=2")
+        speed /= 2
+    while speed < 0.5:
+        parts.append("atempo=0.5")
+        speed /= 0.5
+    if abs(speed - 1) > 1e-6:
+        parts.append(f"atempo={speed:.5f}")
+    return ",".join(parts)
+
+
 def safe_name(name):
     """A project name that is safe as a file name: no slashes, no control characters."""
     return re.sub(r"[^\w .,()'&+-]+", "", str(name)).strip().lstrip(".")[:80]
@@ -390,7 +456,14 @@ def clean_clip(c):
             "bars": "blur" if c.get("bars") == "blur" else "black",
             "crop": clean_crop(c.get("crop")), "rotate": int(num(c.get("rotate", 0), 0, 270)) // 90 * 90,
             # the sound of a video, detached onto its own clip: it adds sound only
-            "audioOnly": bool(c.get("audioOnly"))}
+            "audioOnly": bool(c.get("audioOnly")),
+            # 0.25x to 4x, sound kept at its pitch; the clip then lasts (out - in) / speed
+            "speed": num(c.get("speed", 1), 0.25, 4),
+            # a punch-in: zoomed this much, towards a focus point (shares of the picture)
+            "zoom": num(c.get("zoom", 1), 1, 4), "fx": num(c.get("fx", 0.5), 0, 1), "fy": num(c.get("fy", 0.5), 0, 1),
+            "opacity": num(c.get("opacity", 1), 0, 1),
+            "keys": clean_keys(c.get("keys"), c),
+            "trans": clean_trans(c.get("trans"))}
 
 
 _fonts = None
@@ -746,12 +819,34 @@ class App:
         sf, nf, cursor = {}, {}, {}
         for c in sorted(clips + texts, key=lambda c: c["start"]):
             i = id(c)
-            nf[i] = max(1, frames(c["out"] - c["in"]))
+            nf[i] = max(1, frames((c["out"] - c["in"]) / c.get("speed", 1)))
             sf[i] = frames(c["start"])
             if is_picture(c) and full(c):          # full-frame clips on a track join into one strip
                 sf[i] = max(sf[i], cursor.get(c["track"], 0))
                 cursor[c["track"]] = sf[i] + nf[i]
         total_f = max(sf[id(c)] + nf[id(c)] for c in clips + texts)
+
+        # Transitions: B comes in from A, the full-screen clip that ends right where B starts on
+        # the same track. They overlap by dF frames around the cut: A runs on dF/2 frames past
+        # its end and B starts dF/2 frames early (or holds its first frame if there's nothing
+        # before it), so the timeline keeps its length to the frame.
+        links, link_out = {}, {}                   # id(B) -> (A, dF, xfade name); id(A) -> dF
+        for track in tracks:
+            line = sorted((c for c in pictures if c["track"] == track and full(c)), key=lambda c: sf[id(c)])
+            for A, B in zip(line, line[1:], strict=False):
+                if B.get("trans") and sf[id(B)] == sf[id(A)] + nf[id(A)]:
+                    dF = min(int(round(B["trans"]["dur"] * FPS)), nf[id(A)], nf[id(B)]) // 2 * 2
+                    if dF >= 2:
+                        links[id(B)] = (A, dF, TRANSITIONS[B["trans"]["type"]])
+                        link_out[id(A)] = dF
+
+        def handles(c):
+            """Frames a clip runs on before its start and after its end for a transition:
+            (head from the source, head held as a still, tail)."""
+            head = links[id(c)][1] // 2 if id(c) in links else 0
+            info = self.sources[c["src"]].info if c.get("src") in self.sources else {}
+            have = head if info.get("loop") else min(head, int(c["in"] / c.get("speed", 1) * FPS))
+            return have, head - have, link_out.get(id(c), 0) // 2
         total = total_f / FPS
         first_id = project["sources"][0]["id"] if project.get("sources") else clips[0]["src"]
         first = self.sources.get(first_id) or self.sources[clips[0]["src"]]
@@ -772,7 +867,7 @@ class App:
         pieces = []                                # [first frame, end frame, clips and texts]
         for c in sorted(pictures + texts, key=lambda c: sf[id(c)]):
             s, e = sf[id(c)], sf[id(c)] + nf[id(c)]
-            if pieces and s < pieces[-1][1]:
+            if pieces and (s < pieces[-1][1] or (id(c) in links and s <= pieces[-1][1])):
                 pieces[-1][1] = max(pieces[-1][1], e)
                 pieces[-1][2].append(c)
             else:
@@ -788,16 +883,29 @@ class App:
                 return 0, 0, W, H
             if layout == "free":
                 b = c["box"]
-                return (round(W * b["x"]), round(H * b["y"]),
+                return (round(W * held(c, "x")), round(H * held(c, "y")),
                         max(16, round(W * b["w"]) // 2 * 2), max(16, round(H * b["h"]) // 2 * 2))
             size = float(c.get("size", 0.3))
             return 0, 0, max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2)
 
-        def video(k, c, pad_full):
+        def fitted(c, bw, bh, cr):
+            """The size a clip's picture gets in its box (what scale's force_original_aspect_ratio gives)."""
+            info = self.sources[c["src"]].info
+            cw, ch = info["width"] * (1 - cr["l"] - cr["r"]), info["height"] * (1 - cr["t"] - cr["b"])
+            if c["rotate"] % 180:
+                cw, ch = ch, cw
+            if c.get("layout") in ("free", "full") and c.get("fit") == "fill":
+                return bw, bh
+            s = min(bw / max(cw, 1), bh / max(ch, 1))
+            return max(2, int(cw * s) // 2 * 2), max(2, int(ch * s) // 2 * 2)
+
+        def video(k, c, pad_full, have=0, still=0, tail=0):
             _, _, bw, bh = box_px(c)
             info = self.sources[c["src"]].info
+            speed = c.get("speed", 1)
             # a sticker keeps its transparent pixels on an overlay; on the bottom strip it sits on black
             alpha = info.get("alpha") and not pad_full
+            fade_alpha = not pad_full and (c["opacity"] < 1 or c["fadeIn"] or c["fadeOut"])
             color = (tonemap() if info.get("hdr") else
                      "format=yuva420p" if alpha else f"format=yuv420p,{SDR_TAGS}")
             if c.get("layout") in ("free", "full") and c.get("fit") == "fill":
@@ -805,13 +913,26 @@ class App:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}"
             else:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
-            # crop the picture's edges, then turn it, before it is fitted into its box
-            cr, shape = c["crop"], ""
-            if any(cr.values()):
-                shape += (f"crop=trunc(iw*{1 - cr['l'] - cr['r']:.4f}/2)*2:trunc(ih*{1 - cr['t'] - cr['b']:.4f}/2)*2:"
-                          f"trunc(iw*{cr['l']:.4f}):trunc(ih*{cr['t']:.4f}),")
+            # The crop: the clip's own, plus a punch-in that doesn't move (zooming in = cropping
+            # evenly towards the focus point). A moving zoom is done by zoompan further down.
+            cr, zooming = dict(c["crop"]), moves(c, "zoom", "fx", "fy")
+            if not zooming and held(c, "zoom") > 1:
+                z, fx, fy = held(c, "zoom"), held(c, "fx"), held(c, "fy")
+                w, h, k_ = 1 - cr["l"] - cr["r"], 1 - cr["t"] - cr["b"], 1 - 1 / z
+                cr = {"l": cr["l"] + w * k_ * fx, "r": cr["r"] + w * k_ * (1 - fx),
+                      "t": cr["t"] + h * k_ * fy, "b": cr["b"] + h * k_ * (1 - fy)}
+            shape = ""
+            if any(v > 1e-6 for v in cr.values()):
+                shape += (f"crop=trunc(iw*{1 - cr['l'] - cr['r']:.5f}/2)*2:trunc(ih*{1 - cr['t'] - cr['b']:.5f}/2)*2:"
+                          f"trunc(iw*{cr['l']:.5f}):trunc(ih*{cr['t']:.5f}),")
             shape += {90: "transpose=1,", 180: "hflip,vflip,", 270: "transpose=2,"}.get(c["rotate"], "")
-            f = f"[{k}:v:0]fps={FPS},{color},{shape}"
+            if zooming:                            # Ken Burns and moving punch-ins, over the time in the clip
+                cw, ch = fitted(c, bw, bh, cr)
+                T = f"(it-{have / FPS:.4f})"
+                size += (f",zoompan=z='{eased(c['keys'], 'zoom', T)}':x='(iw-iw/zoom)*({eased(c['keys'], 'fx', T)})'"
+                         f":y='(ih-ih/zoom)*({eased(c['keys'], 'fy', T)})':d=1:s={cw}x{ch}:fps={FPS}")
+            retime = f"setpts=(PTS-STARTPTS)/{speed:.5f}," if abs(speed - 1) > 1e-6 else ""
+            f = f"[{k}:v:0]{retime}fps={FPS},{color},{shape}"
             if full(c) and c["fit"] == "fit" and c["bars"] == "blur":
                 # the bars become a blurred copy of the picture, filling the canvas behind it;
                 # blurred small and scaled up, so it costs next to nothing at 4K
@@ -823,9 +944,31 @@ class App:
                 f += size
                 if pad_full and full(c):
                     f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
-            # exactly n frames: hold the last frame if the source runs short, then cut
-            return (f + f",setsar=1,format={'yuva420p' if alpha else 'yuv420p'},setpts=PTS-STARTPTS,"
-                        f"tpad=stop_mode=clone:stop_duration={3 / FPS:.4f},trim=end_frame={nf[id(c)]}")
+            f += f",setsar=1,format={'yuva420p' if alpha or fade_alpha else 'yuv420p'},setpts=PTS-STARTPTS"
+            if still:                              # a transition reaches before the source: hold its first frame
+                f += f",tpad=start_mode=clone:start={still}"
+            # exactly n frames (plus a transition's handles): hold the last frame if the source runs short
+            n = nf[id(c)] + have + still + tail
+            f += f",tpad=stop_mode=clone:stop_duration={3 / FPS:.4f},trim=end_frame={n}"
+            # opacity and fades: see-through on an overlay, towards black on the bottom strip
+            d, at = nf[id(c)] / FPS, (have + still) / FPS
+            fi, fo = min(c["fadeIn"], d / 2), min(c["fadeOut"], d / 2)
+            if fade_alpha:
+                if c["opacity"] < 1:
+                    f += f",lutyuv=a='val*{c['opacity']:.3f}'"
+                if fi:
+                    f += f",fade=t=in:st={at:.4f}:d={fi:.4f}:alpha=1"
+                if fo:
+                    f += f",fade=t=out:st={at + d - fo:.4f}:d={fo:.4f}:alpha=1"
+            elif pad_full:
+                if c["opacity"] < 1:
+                    o = c["opacity"]
+                    f += f",lutyuv=y='16+(val-16)*{o:.3f}':u='128+(val-128)*{o:.3f}':v='128+(val-128)*{o:.3f}'"
+                if fi:
+                    f += f",fade=t=in:st={at:.4f}:d={fi:.4f}"
+                if fo:
+                    f += f",fade=t=out:st={at + d - fo:.4f}:d={fo:.4f}"
+            return f
 
         m = CORNER_MARGIN
         pos = {"full": ("(W-w)/2", "(H-h)/2"), "tl": (f"W*{m}", f"W*{m}"),
@@ -837,32 +980,61 @@ class App:
             vclips = sorted((c for c in members if is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
             vtexts = sorted((c for c in members if not is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
             args, graph = head + (VAAPI_DEVICE if gpu else []), []
+            base = [c for c in vclips if c["track"] == vclips[0]["track"] and full(c)] if vclips else []
+            in_base = {id(c) for c in base}
+            # transitions only join clips on the bottom strip; elsewhere a clip simply cuts
+            ext = {id(c): handles(c) if id(c) in in_base else (0, 0, 0) for c in vclips}
+            for c in vclips:
+                if id(c) in in_base:
+                    if id(c) in links and id(links[id(c)][0]) not in in_base:
+                        ext[id(c)] = (0, 0, ext[id(c)][2])
+                    if id(c) in link_out and not any(links.get(id(o), (None,))[0] is c for o in base):
+                        ext[id(c)] = (*ext[id(c)][:2], 0)
             for c in vclips:                       # a little extra input, trimmed exactly below
-                info, length = self.sources[c["src"]].info, f"{nf[id(c)] / FPS + 0.25:.4f}"
+                info, speed = self.sources[c["src"]].info, c.get("speed", 1)
+                have, still, tail = ext[id(c)]
+                length = f"{(nf[id(c)] + have + tail) / FPS * speed + 0.25:.4f}"
+                start = c["in"] - have / FPS * speed
                 if info.get("still"):              # a photo or sticker: the one picture, over and over
                     args += ["-loop", "1", "-framerate", str(FPS), "-t", length]
                 elif info.get("loop"):             # an animated GIF/WebP plays round and round
-                    args += ["-stream_loop", "-1", "-ss", f"{c['in'] % max(info['duration'], 0.01):.4f}", "-t", length]
+                    args += ["-stream_loop", "-1", "-ss", f"{start % max(info['duration'], 0.01):.4f}", "-t", length]
                 else:
-                    args += ["-ss", f"{c['in']:.4f}", "-t", length]
+                    args += ["-ss", f"{max(0.0, start):.4f}", "-t", length]
                 args += ["-i", str(self.sources[c["src"]].path)]
 
             def black(label, n):
                 graph.append(f"color=black:s={W}x{H}:r={FPS}:d={(n + 2) / FPS:.4f},format=yuv420p,{SDR_TAGS},"
                              f"trim=end_frame={n},setpts=PTS-STARTPTS[{label}]")
 
-            # Bottom visible track: one concat with black gaps (cheap).
-            base = [c for c in vclips if c["track"] == vclips[0]["track"] and full(c)] if vclips else []
-            segs, at, n = [], a, 0
+            # Bottom visible track: one concat with black gaps (cheap); clips joined by a
+            # transition are first put together with xfade into one run.
+            segs, at, n, run, run_len, prev = [], a, 0, None, 0, None
             for c in base:
                 k = vclips.index(c)
+                have, still, tail = ext[id(c)]
+                linked = id(c) in links and links[id(c)][0] is prev and run is not None and sf[id(c)] == at
                 if sf[id(c)] > at:
+                    if run:
+                        segs.append(run)
+                        run = None
                     black(f"g{n}", sf[id(c)] - at)
                     segs.append(f"[g{n}]")
                     n += 1
-                graph.append(video(k, c, True) + f",setpts=PTS-STARTPTS[s{k}]")
-                segs.append(f"[s{k}]")
-                at = sf[id(c)] + nf[id(c)]
+                graph.append(video(k, c, True, have, still, tail) + f",setpts=PTS-STARTPTS[s{k}]")
+                length = nf[id(c)] + have + still + tail
+                if linked:
+                    _, dF, kind = links[id(c)]
+                    graph.append(f"{run}[s{k}]xfade=transition={kind}:duration={dF / FPS:.4f}:"
+                                 f"offset={(run_len - dF) / FPS:.4f}[x{k}]")
+                    run, run_len = f"[x{k}]", run_len + length - dF
+                else:
+                    if run:
+                        segs.append(run)
+                    run, run_len = f"[s{k}]", length
+                at, prev = sf[id(c)] + nf[id(c)], c
+            if run:
+                segs.append(run)
             if b > at:
                 black(f"g{n}", b - at)
                 segs.append(f"[g{n}]")
@@ -878,6 +1050,10 @@ class App:
                 if c.get("layout") == "free":          # centred in its box (a filled clip is the box)
                     bx, by, bw, bh = box_px(c)
                     x, y = f"{bx}+({bw}-w)/2", f"{by}+({bh}-h)/2"
+                    if moves(c, "x", "y"):             # sliding across the canvas, keyframe to keyframe
+                        T = f"(t-{st:.4f})"
+                        x = f"'W*({eased(c['keys'], 'x', T)})+({bw}-w)/2'"
+                        y = f"'H*({eased(c['keys'], 'y', T)})+({bh}-h)/2'"
                 else:
                     x, y = pos.get(c.get("layout", "full"), pos["full"])
                 graph.append(video(k, c, False) + f",setpts=PTS-STARTPTS+{st:.4f}/TB[o{k}]")
@@ -966,17 +1142,21 @@ class App:
             gain = float(c.get("volume", 1))
             if tracks[c["track"]].get("muted") or gain <= 0 or not self.sources[c["src"]].info["audio"]:
                 continue
-            k = len(audio)
-            args += ["-vn", "-ss", f"{c['in']:.4f}", "-t", f"{nf[id(c)] / FPS + 0.25:.4f}",
+            k, speed = len(audio), c.get("speed", 1)
+            # a transition crossfades the sound as well: both clips play on over the overlap
+            have, _, tail = handles(c) if is_picture(c) else (0, 0, 0)
+            d = (nf[id(c)] + have + tail) / FPS
+            args += ["-vn", "-ss", f"{max(0.0, c['in'] - have / FPS * speed):.4f}", "-t", f"{d * speed + 0.25:.4f}",
                      "-i", str(self.sources[c["src"]].path)]
-            d = nf[id(c)] / FPS
             fade = min(0.02, d / 4)                     # always a tiny fade: no clicks at the cuts
-            fin, fout = max(fade, min(c.get("fadeIn", 0), d / 2)), max(fade, min(c.get("fadeOut", 0), d / 2))
-            ms = int(round(sf[id(c)] / FPS * 1000))
+            fin = max(fade, min(c.get("fadeIn", 0), d / 2), links[id(c)][1] / FPS if have else 0)
+            fout = max(fade, min(c.get("fadeOut", 0), d / 2), link_out[id(c)] / FPS if tail else 0)
+            ms = int(round((sf[id(c)] - have) / FPS * 1000))
             # mono: copy to both sides at full level (a plain upmix would drop it by 3 dB)
             to_stereo = "pan=stereo|c0=c0|c1=c0" if self.sources[c["src"]].info.get("channels") == 1 \
                 else "aformat=channel_layouts=stereo"
-            graph.append(f"[{k}:a:0]aresample=48000,{to_stereo},asetpts=PTS-STARTPTS,"
+            tempo = atempo(speed)
+            graph.append(f"[{k}:a:0]aresample=48000,{to_stereo},asetpts=PTS-STARTPTS,{tempo + ',' if tempo else ''}"
                          f"apad=whole_dur={d:.4f},atrim=duration={d:.4f},"
                          f"volume={gain:.3f},afade=t=in:d={fin:.3f},afade=t=out:st={max(0, d - fout):.4f}:d={fout:.3f},"
                          f"adelay={ms}|{ms}[a{k}]")

@@ -5,6 +5,24 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-07
+
+### Added
+- Speed: 0.25x to 4x per clip, the sound keeping its pitch. What follows on the track moves
+  along as the clip gets longer or shorter.
+- Zoom and punch-in: zoom a clip in towards a focus point (Motion ▾), or press Z to punch
+  in 120% on the clip at the playhead (Z again to go back).
+- Keyframes: zoom, focus and a free clip's position can change over a clip. ◆ Key keeps the
+  values at the playhead; a change anywhere else makes a key there. Moves ease in and out.
+  Ken Burns adds a slow zoom across the clip in one click. Split keeps the motion on both sides.
+- Opacity for videos and pictures, and fade in / fade out for them (picture and sound).
+- Transitions: crossfade, dip to black, slide, wipe, circle or zoom into a clip from the
+  full-screen clip right before it on its track. The sound crossfades too, and the timeline
+  keeps its length to the frame.
+
+### Changed
+- The inspector's video controls wrap onto more rows instead of running off the window.
+
 ## [0.5.0] - 2026-10-07
 
 ### Added
@@ -120,7 +138,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/antoniowav/cutline/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/antoniowav/cutline/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/antoniowav/cutline/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/antoniowav/cutline/compare/v0.2.0...v0.3.0

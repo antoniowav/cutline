@@ -615,6 +615,81 @@ class CutlineServer(unittest.TestCase):
         self.assertTrue(near(pixel(1.1, *corner), (0, 0, 255)), "then turns blue")
         self.assertTrue(near(pixel(1.8, *corner), (0, 255, 0)), "and loops back to lime")
         self.assertTrue(near(pixel(3.5, *corner), (255, 0, 0)), "and is gone after its 3 seconds")
+    def test_9j_speed_zoom_keys_and_transitions(self):
+        v = self.videos
+        # 1 s red then 1 s blue, with a tone: speed is easy to see
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=1", "-f", "lavfi", "-i",
+               f"color=c=blue:s=640x360:r={FPS}:d=1", "-f", "lavfi", "-i", "sine=f=440:d=2",
+               "-filter_complex", "[0][1]concat=n=2:v=1[v]", "-map", "[v]", "-map", "2",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(v / "redblue.mp4"))
+        for name in ("red", "blue", "white"):
+            ffmpeg("-f", "lavfi", "-i", f"color=c={name}:s=640x360:r={FPS}:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                   str(v / f"solid-{name}.mp4"))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=3", "-f", "lavfi", "-i",
+               f"color=c=blue:s=320x360:r={FPS}:d=3", "-filter_complex", "[0][1]overlay=x=320",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(v / "lr.mp4"))
+        self.json("/api/new", {"path": str(v / "redblue.mp4")})
+        for name in ("solid-red.mp4", "solid-blue.mp4", "solid-white.mp4", "lr.mp4"):
+            self.json("/api/addsource", {"path": str(v / name)})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        W = 640
+        clip = lambda i, src, start, out, **k: {"id": i, "src": ids[src], "track": 1, "start": start, "in": 0,
+                                                 "out": out, "layout": "full", "size": 0.3, **k}
+
+        def export(clips):
+            state = self.export({**project, "clips": clips})
+            self.assertEqual(state["state"], "done", state["error"])
+            return state["output"]
+
+        def frames_of(out):
+            return int(next(s for s in probe(out)["streams"] if s["codec_type"] == "video")["nb_read_frames"])
+
+        def pixel(out, t, x, y=180):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", out, "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return tuple(rgb[(y * W + x) * 3:(y * W + x) * 3 + 3])
+
+        near = lambda got, want, tol=70: all(abs(g - w) < tol for g, w in zip(got, want, strict=True))
+        red, blue, black = (255, 0, 0), (0, 0, 255), (0, 0, 0)
+
+        # Speed: 2x makes the 2 s clip last 1 s (red half a second, then blue); 0.5x stretches it.
+        out = export([clip(1, "redblue.mp4", 0, 2, speed=2)])
+        self.assertEqual(frames_of(out), FPS)
+        self.assertTrue(near(pixel(out, 0.25, 320), red) and near(pixel(out, 0.75, 320), blue), "2x plays twice as fast")
+        audio = next(s for s in probe(out)["streams"] if s["codec_type"] == "audio")
+        self.assertAlmostEqual(float(audio.get("duration") or 1), 1, delta=0.1)
+        out = export([clip(1, "redblue.mp4", 0, 1, speed=0.5)])
+        self.assertEqual(frames_of(out), 2 * FPS)
+        self.assertTrue(near(pixel(out, 1.5, 320), red), "0.5x: still red at 1.5 s")
+
+        # Transitions: red then blue, joined with a 1 s crossfade or a dip to black; same length.
+        for kind, mid in (("fade", (128, 0, 128)), ("dip", black)):
+            out = export([clip(1, "solid-red.mp4", 0, 2), clip(2, "solid-blue.mp4", 2, 2, trans={"type": kind, "dur": 1})])
+            self.assertEqual(frames_of(out), 4 * FPS, f"{kind}: the timeline keeps its length")
+            self.assertTrue(near(pixel(out, 1.2, 320), red) and near(pixel(out, 2.8, 320), blue), kind)
+            self.assertTrue(near(pixel(out, 2.0, 320), mid, 90), f"{kind} at the cut: {pixel(out, 2.0, 320)}")
+
+        # Zoom: 2x towards the left edge shows only the red left half; Ken Burns gets there over time.
+        out = export([clip(1, "lr.mp4", 0, 2, zoom=2, fx=0, fy=0.5)])
+        self.assertTrue(near(pixel(out, 1, W - 10), red), "a punch-in to the left")
+        keys = [{"t": 0, "zoom": 1, "fx": 0, "fy": 0.5, "x": 0, "y": 0}, {"t": 2, "zoom": 2, "fx": 0, "fy": 0.5, "x": 0, "y": 0}]
+        out = export([clip(1, "lr.mp4", 0, 2, keys=keys)])
+        self.assertTrue(near(pixel(out, 0.05, W - 10), blue), "Ken Burns starts wide")
+        self.assertTrue(near(pixel(out, 1.95, W - 10), red), "and ends zoomed in")
+
+        # A small white box sliding from left to right over black, at half opacity.
+        keys = [{"t": 0, "zoom": 1, "fx": 0.5, "fy": 0.5, "x": 0, "y": 0.4},
+                {"t": 2, "zoom": 1, "fx": 0.5, "fy": 0.5, "x": 0.8, "y": 0.4}]
+        slide = {"id": 2, "src": ids["solid-white.mp4"], "track": 2, "start": 0, "in": 0, "out": 2, "layout": "free",
+                 "size": 0.3, "box": {"x": 0, "y": 0.4, "w": 0.2, "h": 0.2}, "keys": keys, "opacity": 0.5}
+        out = export([clip(1, "solid-red.mp4", 0, 2, volume=0, opacity=0), slide])
+        self.assertTrue(near(pixel(out, 0.02, 60), (128, 128, 128), 45), f"half-white at the left: {pixel(out, 0.02, 60)}")
+        self.assertTrue(near(pixel(out, 0.02, 580), black), "nothing yet at the right")
+        self.assertTrue(near(pixel(out, 1.9, 560), (128, 128, 128), 45), f"slid to the right: {pixel(out, 1.9, 560)}")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

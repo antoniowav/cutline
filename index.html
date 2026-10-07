@@ -43,7 +43,7 @@
   .caption { position:absolute; transform:translate(-50%,-50%); white-space:pre; text-align:center; font-weight:bold;
     line-height:1.15; pointer-events:auto; cursor:move; user-select:none; }
   .caption.sel { outline:2px solid var(--accent); outline-offset:3px; }
-  #textTools, #mediaTools { display:flex; align-items:center; gap:8px; }
+  #textTools, #mediaTools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; row-gap:6px; }
   #textInput { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px;
     padding:3px 6px; width:180px; resize:vertical; }
   #fadeTools { display:flex; align-items:center; gap:8px; }
@@ -60,7 +60,14 @@
   #swatches button { width:22px; height:22px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   #swatches button.on { outline:2px solid var(--accent); outline-offset:1px; }
   #thex { width:100%; box-sizing:border-box; }
-  #cropWrap, #lookWrap { position:relative; }
+  #cropWrap, #lookWrap, #motionWrap { position:relative; }
+  #motionPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
+    border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
+  #motionPanel.open { display:flex; }
+  #motionPanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #motionPanel input[type=range] { width:120px; }
+  #motionPanel .row { display:flex; gap:6px; flex-wrap:wrap; }
+  #transDur { width:52px; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px; padding:2px 4px; }
   #lookPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; }
   #lookPanel.open { display:flex; }
@@ -161,6 +168,25 @@
       <label class="muted">Bottom <input id="cropb" type="range" min="0" max="45" step="0.5" value="0"></label>
       <button id="cropReset">No crop</button></span></span>
   <button id="detachBtn" title="Put this clip's sound on its own clip, so it can be moved and trimmed apart" disabled>Detach audio</button>
+  <span id="motionWrap"><button id="motionBtn" title="Zoom, focus, opacity and keyframes (Z punches in)" disabled>Motion ▾</button>
+    <span id="motionPanel">
+      <label class="muted">Zoom <span><input id="mzoom" type="range" min="100" max="300" step="1" value="100"> <span id="mzoomVal">100%</span></span></label>
+      <label class="muted" title="Where the zoom goes, left to right">Focus ↔ <input id="mfx" type="range" min="0" max="100" step="1" value="50"></label>
+      <label class="muted" title="Where the zoom goes, top to bottom">Focus ↕ <input id="mfy" type="range" min="0" max="100" step="1" value="50"></label>
+      <label class="muted">Opacity <input id="mop" type="range" min="0" max="100" step="1" value="100"></label>
+      <span class="row"><button id="keyBtn" title="Keep zoom, focus and position as they are at the playhead; change them elsewhere to animate">◆ Key</button>
+        <button id="unkeyBtn" title="Take away the keyframe at the playhead">Remove key</button>
+        <button id="kenBtn" title="A slow zoom in across the whole clip">Ken Burns</button>
+        <button id="nokeysBtn" title="Take away all keyframes">No keys</button></span>
+      <span class="muted" id="keyInfo"></span>
+    </span></span>
+  <label class="muted" title="0.25x to 4x; the sound keeps its pitch">Speed <select id="speed" disabled>
+    <option value="0.25">0.25×</option><option value="0.5">0.5×</option><option value="0.75">0.75×</option><option value="1">1×</option>
+    <option value="1.25">1.25×</option><option value="1.5">1.5×</option><option value="2">2×</option><option value="3">3×</option><option value="4">4×</option></select></label>
+  <label class="muted" title="How this clip comes in from the clip just before it on its track">In <select id="transSel" disabled>
+    <option value="">Cut</option><option value="fade">Crossfade</option><option value="dip">Dip to black</option><option value="slide">Slide</option>
+    <option value="wipe">Wipe</option><option value="circle">Circle</option><option value="zoom">Zoom</option></select>
+    <input id="transDur" type="number" min="0.1" max="3" step="0.1" value="0.5" disabled> s</label>
   </span>
   <span id="textTools" style="display:none">
     <textarea id="textInput" rows="1" placeholder="Type the text" title="Enter starts a new line"></textarea>
@@ -203,7 +229,7 @@
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
   <b>Space</b> play · <b>S</b> split · <b>Del</b> remove (<b>Shift</b> keeps gap) · <b>Q</b>/<b>W</b> trim to playhead ·
-  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video or audio · <b>T</b> add text · <b>Alt</b>+drag copies · <b>Ctrl+C</b>/<b>X</b>/<b>V</b> copy, cut, paste at the playhead · <b>M</b> marker, <b>[</b>/<b>]</b> jump to one · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
+  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video or audio · <b>T</b> add text · <b>Alt</b>+drag copies · <b>Ctrl+C</b>/<b>X</b>/<b>V</b> copy, cut, paste at the playhead · <b>M</b> marker, <b>[</b>/<b>]</b> jump to one · <b>Z</b> punch in · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
   pinch / <b>Ctrl</b>+scroll zooms · <b>0</b> fit · <b>Ctrl+Z</b> undo
 </footer>
 <div id="picker"><div class="panel">
@@ -241,7 +267,9 @@ let colors = {}, vids = {};
 
 // ---------- helpers ----------
 const fmt = x => { x = Math.max(0, x); const m = Math.floor(x / 60); return `${String(m).padStart(2, "0")}:${(x - m * 60).toFixed(2).padStart(5, "0")}`; };
-const len = c => c.out - c.in;
+const spd = c => c.speed || 1;                       // 0.25x to 4x: the clip lasts (out - in) / speed
+const len = c => (c.out - c.in) / spd(c);
+const srcAt = (c, x) => c.in + (x - c.start) * spd(c);  // the source's time at timeline time x
 const end = c => c.start + len(c);
 const total = () => P.clips.reduce((a, c) => Math.max(a, end(c)), 0);
 const frame = () => 1 / (P?.canvas.fps || 30);
@@ -252,6 +280,21 @@ const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
 const isAudio = c => c.audioOnly || S[c.src]?.video === false;   // music, a voiceover or detached sound: sound only
 const NO_CROP = { l: 0, t: 0, r: 0, b: 0 };
 const isText = c => c.kind === "text";             // a title or caption, drawn over everything
+// Zoom, focus and a free clip's position: held, or keyframed and eased in and out between keys
+// (smoothstep), held before the first key and after the last: eased() in the export does the same.
+const heldValues = c => ({ zoom: c.zoom ?? 1, fx: c.fx ?? 0.5, fy: c.fy ?? 0.5, x: c.box?.x ?? 0, y: c.box?.y ?? 0 });
+const KEY_FIELDS = ["zoom", "fx", "fy", "x", "y"];
+function valueAt(c, rel) {
+  const ks = c.keys, pick = k => Object.fromEntries(KEY_FIELDS.map(f => [f, k[f]]));
+  if (!ks?.length) return heldValues(c);
+  if (rel < ks[0].t) return pick(ks[0]);
+  for (let i = 0; i < ks.length - 1; i++) {
+    const a = ks[i], b = ks[i + 1];
+    if (rel < b.t) { const p = (rel - a.t) / Math.max(b.t - a.t, 1e-3), e = p * p * (3 - 2 * p);
+      return Object.fromEntries(KEY_FIELDS.map(f => [f, a[f] + (b[f] - a[f]) * e])); }
+  }
+  return pick(ks[ks.length - 1]);
+}
 const anyLength = c => isText(c) || !!S[c.src]?.loop;  // titles, photos and GIFs can be stretched as long as you like
 // How far a clip has faded in or out at time x: 0..1, as the export ramps it.
 function fadeAt(c, x) {
@@ -340,13 +383,19 @@ function buildVideos() {
     v.addEventListener("seeked", () => { if (v._pending != null) { const w = v._pending; v._pending = null; v.currentTime = w; } });
     vids[tr.id] = v; box.appendChild(v); wire(tr.id);
     const cv = document.createElement("canvas"); cv.className = "bars"; bars[tr.id] = cv; box.appendChild(cv);
+    // the other clip of a transition (the one going out or coming in), shown muted alongside
+    const o = document.createElement("video"); o.preload = "auto"; o.playsInline = true; o.muted = true;
+    o.addEventListener("seeked", () => { if (o._pending != null) { const w = o._pending; o._pending = null; o.currentTime = w; } });
+    others[tr.id] = o; box.appendChild(o);
   }
-  for (const id of Object.keys(vids)) if (!track(+id)) { vids[id].remove(); delete vids[id]; bars[id].remove(); delete bars[id]; }
-  P.tracks.forEach((tr, i) => { bars[tr.id].style.zIndex = 2 * i + 1; vids[tr.id].style.zIndex = 2 * i + 2; });
+  for (const id of Object.keys(vids)) if (!track(+id)) {
+    vids[id].remove(); delete vids[id]; bars[id].remove(); delete bars[id]; others[id].remove(); delete others[id];
+  }
+  P.tracks.forEach((tr, i) => { bars[tr.id].style.zIndex = 3 * i + 1; vids[tr.id].style.zIndex = 3 * i + 2; others[tr.id].style.zIndex = 3 * i + 2; });
 }
 // Blurred bars: a tiny copy of the picture (cropped and turned like it), drawn behind it
 // and blurred by CSS. Cheap enough to redraw every frame.
-const bars = {};
+const bars = {}, others = {};
 function drawBars() {
   if (!P) return;
   for (const tr of P.tracks) {
@@ -376,6 +425,11 @@ function place(v, c) {
   const bw = box.clientWidth, bh = box.clientHeight, src = S[c.src], b = currentBox(c);
   const rot = c.rotate || 0, fill = (c.layout === "free" || !c.layout || c.layout === "full") && c.fit === "fill";
   let { l, t: tp, r, b: bt } = c.crop || NO_CROP;
+  const m = valueAt(c, t - c.start);
+  if (m.zoom > 1) {                    // a punch-in: crop evenly towards the focus point
+    const w = 1 - l - r, h = 1 - tp - bt, k = 1 - 1 / m.zoom;
+    l += w * k * m.fx; r += w * k * (1 - m.fx); tp += h * k * m.fy; bt += h * k * (1 - m.fy);
+  }
   const key = `${bw}x${bh}:${b.x},${b.y},${b.w},${b.h}:${fill}:${l},${tp},${r},${bt}:${rot}:${src?.width}`;
   if (v._place === key) return;                     // style writes are costly; only when something changed
   v._place = key;
@@ -399,24 +453,67 @@ function seekTo(v, want) {
   if (v.seeking) { v._pending = want; return; }
   v.currentTime = want;
 }
+// Show clip c on a <video> at the playhead: the right file, time, speed, place and opacity.
+function showOn(v, c, force, muted) {
+  const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
+  if (v.dataset.media !== media) { v.src = `/media/${c.src}?${media}`; v.dataset.media = media; v._pending = null; force = true; }
+  const loop = S[c.src].loop;
+  const want = Math.max(0, loop ? srcAt(c, t) % Math.max(0.01, S[c.src].duration) : srcAt(c, t));
+  if (Math.abs(v.playbackRate - spd(c)) > 1e-6) v.playbackRate = spd(c);   // the pitch stays (preservesPitch)
+  v.loop = !!loop; v.muted = muted;
+  v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
+  // opacity and fades, as the export does them
+  Object.assign(v.style, { opacity: isAudio(c) ? 1 : (c.opacity ?? 1) * fadeAt(c, t), translate: "", scale: "",
+                           maskImage: "", webkitMaskImage: "" });
+  if (playing) {
+    if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
+    else if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
+  } else {
+    if (!v.paused) v.pause();
+    if (force || Math.abs(v.currentTime - want) > 0.03) seekTo(v, want);
+  }
+}
+const fullPicture = c => !!c && !isText(c) && !isAudio(c) && (!c.layout || c.layout === "full");
+// The full-screen clip that ends right where c starts (or starts right where c ends), on c's track.
+const prevAbut = c => P.clips.find(o => o.track === c.track && o.id !== c.id && fullPicture(o) && Math.abs(end(o) - c.start) < frame() / 2);
+const nextAbut = c => P.clips.find(o => o.track === c.track && o.id !== c.id && fullPicture(o) && Math.abs(o.start - end(c)) < frame() / 2);
+const transLength = (A, B) => Math.min(B.trans.dur, len(A), len(B));
+// The transition the playhead is in on clip c's track: { a, b, p } (p goes 0 → 1), or null.
+function transitionAt(c) {
+  if (!fullPicture(c)) return null;
+  const A = c.trans ? prevAbut(c) : null;
+  if (A && fullPicture(A)) { const d = transLength(A, c); if (t < c.start + d / 2) return { a: A, b: c, p: (t - c.start + d / 2) / d }; }
+  const B = nextAbut(c);
+  if (B?.trans) { const d = transLength(c, B); if (t >= B.start - d / 2) return { a: c, b: B, p: (t - B.start + d / 2) / d }; }
+  return null;
+}
+// How the two clips of a transition look at p, close to what ffmpeg's xfade draws.
+function transitionLook(kind, p, a, b, va, vb) {
+  const bw = box.clientWidth;
+  vb.style.zIndex = +va.style.zIndex + 1;
+  if (kind === "fade") vb.style.opacity *= p;
+  if (kind === "dip") { va.style.opacity *= Math.max(0, 1 - 2 * p); vb.style.opacity *= Math.max(0, 2 * p - 1); }
+  if (kind === "slide") { va.style.translate = `${-p * bw}px 0`; vb.style.translate = `${(1 - p) * bw}px 0`; }
+  if (kind === "wipe") { const m = `linear-gradient(to right, transparent ${(1 - p) * 100}%, #000 ${(1 - p) * 100}%)`; vb.style.maskImage = vb.style.webkitMaskImage = m; }
+  if (kind === "circle") { const r = p * Math.hypot(vb.offsetWidth, vb.offsetHeight) / 2;
+    const m = `radial-gradient(circle at 50% 50%, #000 ${r}px, transparent ${r}px)`; vb.style.maskImage = vb.style.webkitMaskImage = m; }
+  if (kind === "zoom") { va.style.scale = String(1 + p); va.style.opacity *= 1 - p; vb.style.opacity *= p; }
+}
 function sync(force) {
   applyGains();
-  for (const tr of P.tracks) {
-    const v = vids[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
-    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { if (!v.paused) v.pause(); v.style.display = "none"; continue; }
-    const media = `${c.src}:${S[c.src].proxyReady ? "proxy" : "orig"}`;     // switch to the proxy once it's ready
-    if (v.dataset.media !== media) { v.src = `/media/${c.src}?${media}`; v.dataset.media = media; v._pending = null; force = true; }
-    const loop = S[c.src].loop, want = loop ? (c.in + (t - c.start)) % Math.max(0.01, S[c.src].duration) : c.in + (t - c.start);
-    v.loop = !!loop;
-    v.muted = actx ? false : tr.muted; v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
-    if (playing) {
-      if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
-      else if (Math.abs(v.currentTime - want) > 0.25) v.currentTime = want;
-    } else {
-      if (!v.paused) v.pause();
-      if (force || Math.abs(v.currentTime - want) > 0.03) seekTo(v, want);
-    }
-  }
+  P.tracks.forEach((tr, i) => {
+    const v = vids[tr.id], o = others[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
+    const hide = el => { if (!el.paused) el.pause(); el.style.display = "none"; };
+    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { hide(v); hide(o); return; }
+    showOn(v, c, force, actx ? false : tr.muted);
+    v.style.zIndex = 3 * i + 2;
+    const tx = transitionAt(c), other = tx && (tx.a === c ? tx.b : tx.a);
+    if (!other || !S[other.src]) { hide(o); return; }
+    showOn(o, other, force, true);
+    o.style.zIndex = 3 * i + 2;
+    transitionLook(tx.b.trans.type, Math.max(0, Math.min(1, tx.p)), tx.a, tx.b,
+                   tx.a === c ? v : o, tx.b === c ? v : o);
+  });
   showFrame();                         // the frame follows the clip as the playhead moves on or off it
   drawCaptions();
 }
@@ -426,7 +523,7 @@ function play() {
   ensureAudio();
   playing = true; clock = { t0: t, p0: performance.now() }; sync(true);
 }
-function pause() { playing = false; for (const v of Object.values(vids)) v.pause(); sync(true); }
+function pause() { playing = false; for (const v of [...Object.values(vids), ...Object.values(others)]) v.pause(); sync(true); }
 function seek(x) { t = Math.min(Math.max(0, x), total()); if (playing) clock = { t0: t, p0: performance.now() }; sync(true); draw(); }
 function tick() {
   if (playing) {
@@ -452,8 +549,14 @@ function split() {
   change(() => {
     let id = nextId(); const fresh = [];
     for (const c of targets) {
-      const cut = c.in + (t - c.start);
+      const cut = srcAt(c, t), at = t - c.start;
       const right = { ...c, id: id++, start: t, in: cut };
+      // keyframes split too, each side keeping the value at the cut, so nothing jumps
+      if (c.keys?.length) {
+        const mid = valueAt(c, at);
+        right.keys = [{ t: 0, ...mid }, ...c.keys.filter(k => k.t > at).map(k => ({ ...k, t: k.t - at }))];
+        c.keys = [...c.keys.filter(k => k.t < at), { t: at, ...mid }];
+      }
       c.out = cut; P.clips.push(right); fresh.push(right.id);
     }
     selected = new Set(fresh);
@@ -491,10 +594,10 @@ function trim(side) {
   const c = target(); if (!c) return toast("Move the playhead over a clip");
   const at = t - c.start;
   if (side === "start" && at >= frame()) change(() => {
-    c.in += at; shiftAfter(c.track, end(c) + at, at, new Set([c.id])); t = c.start;
+    c.in += at * spd(c); shiftAfter(c.track, end(c) + at, at, new Set([c.id])); t = c.start;
   });
   if (side === "end" && len(c) - at >= frame()) change(() => {
-    const cut = len(c) - at, oldEnd = end(c); c.out = c.in + at; shiftAfter(c.track, oldEnd, cut, new Set([c.id]));
+    const cut = len(c) - at, oldEnd = end(c); c.out = c.in + at * spd(c); shiftAfter(c.track, oldEnd, cut, new Set([c.id]));
   });
 }
 function freeStart(trackId, start, d, ignore) {   // first spot >= start where [s, s+d) is free
@@ -601,7 +704,15 @@ function showInspector() {
   for (const id of ["animIn", "animOut"]) $(id).style.display = text ? "" : "none";
   $("fadeInWord").style.display = $("fadeOutWord").style.display = text ? "none" : "";
   if (!text) { $("lookPanel").classList.remove("open"); $("palette").classList.remove("open"); }
-  const fades = one && (text || isAudio(one));
+  const fades = !!one;                                 // titles, sound and (now) pictures fade
+  const vid = one && !text && !isAudio(one);
+  $("motionBtn").disabled = !vid; if (!vid) $("motionPanel").classList.remove("open");
+  $("speed").disabled = !one || text; if (one && !text) $("speed").value = String(spd(one));
+  const before = vid && fullPicture(one) ? prevAbut(one) : null;
+  $("transSel").disabled = $("transDur").disabled = !before;
+  $("transSel").value = before && one.trans ? one.trans.type : ""; $("transDur").value = before && one.trans ? one.trans.dur : 0.5;
+  $("transSel").title = before ? "How this clip comes in from the one just before it" : "Put this clip right after another full-screen clip on its track for a transition";
+  if (vid) showMotion(one);
   $("fadeTools").style.display = fades ? "flex" : "none";
   if (fades) { if (document.activeElement !== $("fadeIn")) $("fadeIn").value = one.fadeIn || 0;
     if (document.activeElement !== $("fadeOut")) $("fadeOut").value = one.fadeOut || 0; }
@@ -676,7 +787,10 @@ $("aspect").onchange = () => {
 
 // The box a clip covers now, as shares of the canvas (corners use the export's margin).
 function currentBox(c) {
-  if (c.layout === "free" && c.box) return { ...c.box };
+  if (c.layout === "free" && c.box) {
+    if (!c.keys?.length || boxDrag?.c === c) return { ...c.box };     // a drag shows where it's going
+    const v = valueAt(c, t - c.start); return { ...c.box, x: v.x, y: v.y };
+  }
   if (!c.layout || c.layout === "full") return { ...FULL_BOX };
   const s = c.size || 0.3, mx = 0.03, my = 0.03 * P.canvas.w / P.canvas.h;
   return { x: c.layout.endsWith("l") ? mx : 1 - s - mx, y: c.layout.startsWith("t") ? my : 1 - s - my, w: s, h: s };
@@ -754,7 +868,8 @@ stageEl.addEventListener("pointerdown", (e) => {
     if (!c) return toast("Set Layout to Free to move this clip around");
   }
   e.preventDefault(); stageEl.setPointerCapture(e.pointerId);
-  boxDrag = { c, corner, px, py, start: { ...c.box }, aspect: c.box.w * box.clientWidth / (c.box.h * box.clientHeight) };
+  const from = currentBox(c);                       // where it is now (keyframes may move it)
+  boxDrag = { c, corner, px, py, start: from, aspect: from.w * box.clientWidth / (from.h * box.clientHeight) };
   sliderStart();
 });
 stageEl.addEventListener("pointermove", (e) => {
@@ -798,7 +913,10 @@ stageEl.addEventListener("pointermove", (e) => {
   c.box = b; showGuides(gx, gy); sync(true); showFrame();
 });
 const endBoxDrag = () => { if (textDrag) { textDrag = null; showGuides(null, null); sliderEnd(); draw(); return; }
-  if (!boxDrag) return; boxDrag = null; showGuides(null, null); sliderEnd(); draw(); };
+  if (!boxDrag) return;
+  const { c } = boxDrag; boxDrag = null;
+  if (c.keys?.length) setAnimated(c, { x: c.box.x, y: c.box.y });   // keyframed: the move becomes a key here
+  showGuides(null, null); sliderEnd(); sync(true); draw(); };
 // ---------- text: titles and captions ----------
 // Drawn as plain HTML over the preview with the export's font, size and box, so what
 // you see is what drawtext renders.
@@ -946,6 +1064,72 @@ function addTemplate(kind) {
   $("textInput").focus(); $("textInput").select();
 }
 $("tplSel").onchange = () => { addTemplate($("tplSel").value); $("tplSel").value = ""; };
+
+// ---------- motion: zoom, focus, opacity, keyframes; speed; transitions ----------
+// With keyframes, a change at the playhead goes into the key there (made if there is none).
+function setAnimated(c, vals) {
+  if (c.keys?.length) {
+    const rel = Math.min(Math.max(0, t - c.start), len(c));
+    let k = c.keys.find(k => Math.abs(k.t - rel) < frame() * 0.75);
+    if (!k) { k = { t: rel, ...valueAt(c, rel) }; c.keys.push(k); c.keys.sort((a, b) => a.t - b.t); }
+    Object.assign(k, vals);
+  } else for (const [f, v] of Object.entries(vals)) {
+    if (f === "x" || f === "y") { c.box = { ...(c.box || FULL_BOX), [f]: v }; } else c[f] = v;
+  }
+}
+const keyAt = c => c.keys?.find(k => Math.abs(k.t - (t - c.start)) < frame() * 0.75);
+function showMotion(c) {
+  const v = valueAt(c, t - c.start);
+  $("mzoom").value = Math.round(v.zoom * 100); $("mzoomVal").textContent = `${Math.round(v.zoom * 100)}%`;
+  $("mfx").value = Math.round(v.fx * 100); $("mfy").value = Math.round(v.fy * 100); $("mop").value = Math.round((c.opacity ?? 1) * 100);
+  const n = c.keys?.length || 0;
+  $("unkeyBtn").disabled = !keyAt(c);
+  $("keyInfo").textContent = n ? `${n} keyframe${n > 1 ? "s" : ""}${keyAt(c) ? " · on one now" : ""} · changes here make a key` : "No keyframes: changes hold for the whole clip";
+}
+const selVid = () => { const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null; return c && !isText(c) && !isAudio(c) ? c : null; };
+$("motionBtn").onclick = (e) => { e.stopPropagation(); $("motionPanel").classList.toggle("open"); };
+$("motionPanel").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => $("motionPanel").classList.remove("open"));
+for (const [id, field, scale] of [["mzoom", "zoom", 100], ["mfx", "fx", 100], ["mfy", "fy", 100]]) {
+  $(id).oninput = () => { const c = selVid(); if (!c) return; sliderStart(); setAnimated(c, { [field]: $(id).value / scale }); showMotion(c); sync(true); draw(); };
+  $(id).onchange = sliderEnd;
+}
+$("mop").oninput = () => { const c = selVid(); if (!c) return; sliderStart(); c.opacity = $("mop").value / 100; sync(true); };
+$("mop").onchange = sliderEnd;
+$("keyBtn").onclick = () => { const c = selVid(); if (!c) return;
+  change(() => { const rel = Math.min(Math.max(0, t - c.start), len(c)), v = valueAt(c, rel);
+    c.keys = c.keys || []; if (!keyAt(c)) { c.keys.push({ t: rel, ...v }); c.keys.sort((a, b) => a.t - b.t); } }); };
+$("unkeyBtn").onclick = () => { const c = selVid(), k = c && keyAt(c); if (!k) return;
+  change(() => { c.keys = c.keys.filter(x => x !== k); if (!c.keys.length) delete c.keys; }); };
+$("kenBtn").onclick = () => { const c = selVid(); if (!c) return;
+  change(() => { const h = heldValues(c);
+    c.keys = [{ t: 0, ...h, zoom: 1, fx: 0.5, fy: 0.5 }, { t: len(c), ...h, zoom: 1.25, fx: 0.6, fy: 0.4 }]; });
+  toast("Ken Burns: a slow zoom across the clip. Move the playhead and change Zoom or Focus to adjust"); };
+$("nokeysBtn").onclick = () => { const c = selVid(); if (!c?.keys) return;
+  change(() => { const v = valueAt(c, t - c.start); delete c.keys; Object.assign(c, { zoom: v.zoom, fx: v.fx, fy: v.fy });
+    if (c.box) c.box = { ...c.box, x: v.x, y: v.y }; }); };
+// Z: punch in to 120 % on the clip under the playhead (or the selected one), or back out.
+function punchIn() {
+  const c = selVid() && t >= selVid().start && t < end(selVid()) ? selVid()
+          : P.tracks.slice().reverse().map(tr => !tr.hidden && clipAt(tr.id, t)).find(c => c && !isText(c) && !isAudio(c));
+  if (!c) return toast("Put the playhead over a video to punch in");
+  change(() => setAnimated(c, { zoom: valueAt(c, t - c.start).zoom > 1.01 ? 1 : 1.2 }));
+  toast(valueAt(c, t - c.start).zoom > 1 ? "Punched in 120% (Z again to go back)" : "Zoom back to 100%");
+}
+// Speed: the clip gets longer or shorter from its start; what follows on its track moves along.
+$("speed").onchange = () => {
+  const s = Number($("speed").value), clips = P.clips.filter(c => selected.has(c.id) && !isText(c));
+  change(() => { for (const c of clips) {
+    const oldLen = len(c), oldEnd = end(c); c.speed = s; if (s === 1) delete c.speed;
+    for (const k of c.keys || []) k.t *= len(c) / oldLen;
+    shiftAfter(c.track, oldEnd, oldLen - len(c), new Set([c.id]));
+  } });
+};
+const setTrans = () => { const c = selVid(); if (!c) return;
+  const type = $("transSel").value, dur = Math.min(3, Math.max(0.1, parseFloat($("transDur").value) || 0.5));
+  change(() => { if (type) c.trans = { type, dur }; else delete c.trans; }); };
+$("transSel").onchange = setTrans;
+$("transDur").onchange = setTrans;
 
 // Fades for a caption's look or a clip's sound, in seconds.
 for (const key of ["fadeIn", "fadeOut"]) {
@@ -1095,7 +1279,7 @@ function drawClip(c, x0, y0, alpha) {
   if (src?.sprite && !c.audioOnly) {
     const tw = src.thumbW * THUMB / src.thumbH;
     for (let x = x0 + Math.max(0, Math.floor((HEAD - x0) / tw)) * tw; x < Math.min(x0 + w, W); x += tw) {
-      const at = c.in + (x - x0) / pps;
+      const at = c.in + (x - x0) / pps * spd(c);
       const idx = Math.min(src.thumbs - 1, Math.max(0, Math.floor(at / src.duration * src.thumbs)));
       const cols = src.spriteCols || src.thumbs;
       ctx.drawImage(src.sprite, (idx % cols) * src.thumbW, Math.floor(idx / cols) * src.thumbH, src.thumbW, src.thumbH, x, y0, tw, THUMB);
@@ -1106,10 +1290,23 @@ function drawClip(c, x0, y0, alpha) {
     const pk = src.peaks, mid = y0 + THUMB + WAVE / 2;
     ctx.fillStyle = track(c.track)?.muted ? colors.muted : colors.accent;
     for (let x = Math.floor(Math.max(x0, HEAD)); x < Math.min(x0 + w, W); x++) {
-      const a = c.in + (x - x0) / pps, i0 = Math.floor(a / pk.step), i1 = Math.max(i0 + 1, Math.ceil((a + 1 / pps) / pk.step));
+      const a = c.in + (x - x0) / pps * spd(c), i0 = Math.floor(a / pk.step), i1 = Math.max(i0 + 1, Math.ceil((a + spd(c) / pps) / pk.step));
       let m = 0; for (let i = i0; i < i1 && i < pk.peaks.length; i++) m = Math.max(m, pk.peaks[i]);
       const hh = Math.max(1, Math.min(1, m * vol(c)) * (WAVE - 4)); ctx.fillRect(x, mid - hh / 2, 1, hh);
     }
+  }
+  // Keyframes: small diamonds along the bottom of the picture.
+  for (const k of c.keys || []) {
+    const kx = x0 + k.t * pps, ky = y0 + THUMB - 7;
+    ctx.fillStyle = colors.yellow || colors.accent; ctx.beginPath();
+    ctx.moveTo(kx, ky - 5); ctx.lineTo(kx + 5, ky); ctx.lineTo(kx, ky + 5); ctx.lineTo(kx - 5, ky); ctx.fill();
+  }
+  // A transition in: a bow tie over the cut, as wide as it lasts.
+  if (c.trans && prevAbut(c)) {
+    const tw = transLength(prevAbut(c), c) * pps / 2;
+    ctx.fillStyle = colors.accent; ctx.globalAlpha = 0.55; ctx.beginPath();
+    ctx.moveTo(x0 - tw, y0); ctx.lineTo(x0 + tw, y0 + h); ctx.lineTo(x0 + tw, y0); ctx.lineTo(x0 - tw, y0 + h); ctx.fill();
+    ctx.globalAlpha = 1;
   }
   // Fades: a shaded ramp at each end, as long as the fade.
   const fi = Math.min(c.fadeIn || 0, len(c) / 2) * pps, fo = Math.min(c.fadeOut || 0, len(c) / 2) * pps;
@@ -1227,13 +1424,13 @@ window.addEventListener("mousemove", e => {
     const c = drag.trimClip, { prevEnd, nextStart } = neighbours(c), src = S[c.src];
     const at = snapTime(T(x), c.id);
     if (drag.trim === "end") {
-      const maxEnd = Math.min(nextStart, anyLength(c) ? Infinity : c.start + ((src?.duration ?? c.out) - c.in));
+      const maxEnd = Math.min(nextStart, anyLength(c) ? Infinity : c.start + ((src?.duration ?? c.out) - c.in) / spd(c));
       const newEnd = Math.min(Math.max(at, c.start + frame()), maxEnd);
-      c.out = c.in + (newEnd - c.start); t = newEnd - 1e-3;
+      c.out = c.in + (newEnd - c.start) * spd(c); t = newEnd - 1e-3;
     } else {
-      const minStart = Math.max(prevEnd, anyLength(c) ? 0 : c.start - c.in);
+      const minStart = Math.max(prevEnd, anyLength(c) ? 0 : c.start - c.in / spd(c));
       const newStart = Math.min(Math.max(at, minStart), end(c) - frame());
-      if (anyLength(c)) { c.out = end(c) - newStart; c.in = 0; } else c.in += newStart - c.start;   // text and pictures keep their end
+      if (anyLength(c)) { c.out = (end(c) - newStart) * spd(c); c.in = 0; } else c.in += (newStart - c.start) * spd(c);   // text and pictures keep their end
       c.start = newStart; t = newStart;
     }
     if (x > canvas.clientWidth - 30) scrollX += 10;
@@ -1327,6 +1524,7 @@ window.addEventListener("keydown", e => {
   else if (k === "a") openPicker();
   else if (k === "t") addText();
   else if (k === "m" || k === "M") toggleMarker();
+  else if (k === "z" || k === "Z") punchIn();
   else if (k === "[") jumpMarker(-1);
   else if (k === "]") jumpMarker(1);
   else if (k === "ArrowLeft" || k === "ArrowRight") {
