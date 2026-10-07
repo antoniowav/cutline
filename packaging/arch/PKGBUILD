@@ -13,7 +13,7 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             'xdg-user-dirs: find your Videos folder'
             'xdg-utils: show exports in the file manager, use your default browser')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('ae4d5b838ad2b26a051f5824fc6536f83e1a7835c8f87235a23215e0f4e6b21e')
+sha256sums=('40a3a6a61f4df0a36b828c01b8aef77d79c52fce5304fe8123c65f555d4bb3ae')
 
 check() {
   cd "$pkgname-$pkgver"
