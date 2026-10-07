@@ -94,7 +94,7 @@
   <button id="addBtn" title="Add a video, music or a voiceover (A)">＋ Media</button>
   <button id="textBtn" title="Add a title or caption at the playhead (T)">＋ Text</button>
   <button id="trackBtn" title="Add a track on top">＋ Track</button>
-  <select id="quality" title="Export size"><option value="orig">Original size</option><option value="1080">1080p</option></select>
+  <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original size</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option></select>
   <button class="primary" id="exportBtn">Export</button>
 </header>
 <div id="stage"><div id="box"><div id="captions"></div></div><div id="frame"><i data-c="nw"></i><i data-c="ne"></i><i data-c="sw"></i><i data-c="se"></i></div></div>
@@ -1038,7 +1038,7 @@ $("exportBtn").onclick = async () => {
   if (cur.state === "running") { if (confirm("Cancel the export?")) fetch("/api/export/cancel", { method: "POST" }); return; }
   await save(true);
   const r = await (await fetch("/api/export", { method: "POST",
-    body: JSON.stringify({ project: P, scale1080: $("quality").value === "1080" }) })).json();
+    body: JSON.stringify({ project: P, height: Number($("quality").value) || null }) })).json();
   if (r.state === "error") return toast(r.error, 6000);
   watchExport();
 };

@@ -89,6 +89,9 @@ SDR_TAGS = "setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709:ran
 # The same on the CPU, for an ffmpeg without libplacebo or a machine without Vulkan.
 TONEMAP_CPU = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,"
                "zscale=t=bt709:m=bt709:r=tv,format=yuv420p")
+# The GPU the export encodes on (the default VA-API device), and the export heights offered.
+VAAPI_DEVICE = ["-init_hw_device", "vaapi=va", "-filter_hw_device", "va"]
+EXPORT_HEIGHTS = (720, 1080, 1440)
 # The pages only load from this server; inline script/style is how they're written.
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; "
@@ -112,6 +115,19 @@ def tonemap():
     print("cutline: no working HDR tone mapping (libplacebo or zscale); HDR videos will look washed out",
           file=sys.stderr)
     return f"format=yuv420p,{SDR_TAGS}"
+
+
+@functools.cache
+def gpu_encoder():
+    """True when ffmpeg can encode H.264 on the GPU (VA-API), tried once on a tiny clip.
+    The export then leaves the CPU to decoding: much faster and cooler than x264."""
+    try:
+        return subprocess.run(["ffmpeg", "-v", "error", *VAAPI_DEVICE, "-f", "lavfi", "-i",
+                               "color=s=256x144:d=0.2", "-vf", "format=nv12,hwupload",
+                               "-c:v", "h264_vaapi", "-qp", "21", "-f", "null", "-"],
+                              capture_output=True, timeout=30).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def rotation(stream):
@@ -524,22 +540,30 @@ class App:
         return out
 
     # ---- export ----
-    def start_export(self, project, scale1080):
+    def start_export(self, project, height=None):
         with self.lock:
             if self.busy():
                 return
             try:
-                args, total, out = self.build_export(project, scale1080)
+                steps, out, work = self.build_export(project, height)
             except ValueError as e:
                 self.export = {"state": "error", "progress": 0, "output": "", "error": str(e)}
                 return
             self.export = job = {"state": "running", "progress": 0.0, "output": str(out), "error": ""}
-        threading.Thread(target=self.run_export, args=(job, args, total, out), daemon=True).start()
+        threading.Thread(target=self.run_export, args=(job, steps, out, work), daemon=True).start()
 
-    def build_export(self, project, scale1080):
+    def build_export(self, project, height=None):
+        """The export as a list of ffmpeg runs: the picture in pieces, then the sound, then the
+        pieces joined with the sound. One run for the whole timeline would open every clip's
+        video at once, and a long 4K edit then needs more memory than the computer has."""
         project = clean_project(project)
         W, H = project["canvas"]["w"] // 2 * 2, project["canvas"]["h"] // 2 * 2
         FPS = project["canvas"].get("fps") or 30
+        # A smaller export is built at its own size from the start, not shrunk at the end:
+        # every clip, box and text is placed in shares of the canvas, so it all scales along.
+        smaller = height in EXPORT_HEIGHTS and H > height
+        if smaller:
+            W, H = round(W * height / H / 2) * 2, height
         tracks = {t["id"]: t for t in project["tracks"]}
         order = [t["id"] for t in project["tracks"]]             # bottom → top
         clips = [c for c in project["clips"]
@@ -556,29 +580,46 @@ class App:
         # cuts the picture drifts away from the sound.
         frames = lambda x: int(round(x * FPS))
         has_video = lambda c: self.sources[c["src"]].info.get("video", True)
+        full = lambda c: c.get("layout", "full") == "full"
         pictures = [c for c in clips if has_video(c)]       # music and voiceovers only add sound
-        base_track = pictures[0]["track"] if pictures else None
-        base = [c for c in pictures if c["track"] == base_track and c.get("layout", "full") == "full"]
-        sf, nf, cursor = {}, {}, 0
-        for c in clips:
+        picture_ids = {id(c) for c in pictures}
+        is_picture = lambda c: id(c) in picture_ids
+        sf, nf, cursor = {}, {}, {}
+        for c in sorted(clips + texts, key=lambda c: c["start"]):
             i = id(c)
             nf[i] = max(1, frames(c["out"] - c["in"]))
             sf[i] = frames(c["start"])
-            if c in base:                          # the base track is one continuous strip
-                sf[i] = max(sf[i], cursor)
-                cursor = sf[i] + nf[i]
-        total_f = max([sf[id(c)] + nf[id(c)] for c in clips]
-                      + [frames(c["start"]) + max(1, frames(c["out"] - c["in"])) for c in texts])
+            if is_picture(c) and full(c):          # full-frame clips on a track join into one strip
+                sf[i] = max(sf[i], cursor.get(c["track"], 0))
+                cursor[c["track"]] = sf[i] + nf[i]
+        total_f = max(sf[id(c)] + nf[id(c)] for c in clips + texts)
         total = total_f / FPS
         first_id = project["sources"][0]["id"] if project.get("sources") else clips[0]["src"]
         first = self.sources.get(first_id) or self.sources[clips[0]["src"]]
-        out = self.output_path(first.path.parent, project["name"], scale1080 and H > 1080)
+        out = self.output_path(first.path.parent, project["name"], f"-{H}p" if smaller else "")
+        shutil.rmtree(CACHE / "export", ignore_errors=True)   # what earlier exports left behind
+        work = CACHE / "export" / secrets.token_hex(4)
+        work.mkdir(parents=True)
+        # ffmpeg reads the text files and the list of pieces from here, inside quotes
+        if "'" in str(work):
+            raise ValueError("Can't export: the cache folder's path contains a quote")
+        head = ["ffmpeg", "-v", "error", "-y", "-progress", "pipe:1", "-nostats"]
 
-        args = ["ffmpeg", "-v", "error", "-y", "-progress", "pipe:1", "-nostats"]
-        graph, audio = [], []
-        for c in clips:                            # a little extra input, trimmed exactly below
-            args += ["-ss", f"{c['in']:.4f}", "-t", f"{nf[id(c)] / FPS + 0.25:.4f}",
-                     "-i", str(self.sources[c["src"]].path)]
+        # Cut the timeline into pieces, one per run of clips that overlap in time, so each
+        # ffmpeg run only opens the videos it shows together. Every open 4K decoder holds about
+        # a gigabyte of frames, whether or not its clip is on screen yet. A gap belongs to the
+        # piece after it, and the last piece runs to the end.
+        pieces = []                                # [first frame, end frame, clips and texts]
+        for c in sorted(pictures + texts, key=lambda c: sf[id(c)]):
+            s, e = sf[id(c)], sf[id(c)] + nf[id(c)]
+            if pieces and s < pieces[-1][1]:
+                pieces[-1][1] = max(pieces[-1][1], e)
+                pieces[-1][2].append(c)
+            else:
+                pieces.append([pieces[-1][1] if pieces else 0, e, [c]])
+        if not pieces:
+            pieces = [[0, total_f, []]]
+        pieces[-1][1] = total_f
 
         def box_px(c):
             """A clip's box in pixels: x, y, width, height (even sizes, as yuv420p needs)."""
@@ -593,7 +634,6 @@ class App:
             return 0, 0, max(16, round(W * size) // 2 * 2), max(16, round(H * size) // 2 * 2)
 
         def video(k, c, pad_full):
-            full = c.get("layout", "full") == "full"
             _, _, bw, bh = box_px(c)
             color = tonemap() if self.sources[c["src"]].info.get("hdr") else f"format=yuv420p,{SDR_TAGS}"
             if c.get("layout") == "free" and c.get("fit") == "fill":
@@ -602,64 +642,69 @@ class App:
             else:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
             f = f"[{k}:v:0]fps={FPS},{color},{size}"
-            if pad_full and full:
+            if pad_full and full(c):
                 f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
             # exactly n frames: hold the last frame if the source runs short, then cut
             return (f + f",setsar=1,format=yuv420p,setpts=PTS-STARTPTS,"
                         f"tpad=stop_mode=clone:stop_duration={3 / FPS:.4f},trim=end_frame={nf[id(c)]}")
 
-        def black(label, n):
-            graph.append(f"color=black:s={W}x{H}:r={FPS}:d={(n + 2) / FPS:.4f},format=yuv420p,{SDR_TAGS},"
-                         f"trim=end_frame={n},setpts=PTS-STARTPTS[{label}]")
-
-        # Bottom visible track: one concat with black gaps (cheap).
-        segs, at, n = [], 0, 0
-        for c in base:
-            k = clips.index(c)
-            if sf[id(c)] > at:
-                black(f"g{n}", sf[id(c)] - at); segs.append(f"[g{n}]"); n += 1
-            graph.append(video(k, c, True) + f",setpts=PTS-STARTPTS[s{k}]")
-            segs.append(f"[s{k}]")
-            at = sf[id(c)] + nf[id(c)]
-        if total_f > at:
-            black(f"g{n}", total_f - at); segs.append(f"[g{n}]")
-        # re-time by frame number: the joined strip is exactly sum(n) frames, so frame N sits at N/FPS
-        graph.append(f"{''.join(segs)}concat=n={len(segs)}:v=1:a=0,setpts=N/({FPS}*TB)[b0]")
-
-        # Everything else is overlaid on top, in track order.
         m = CORNER_MARGIN
         pos = {"full": ("(W-w)/2", "(H-h)/2"), "tl": (f"W*{m}", f"W*{m}"),
                "tr": (f"W-w-W*{m}", f"W*{m}"), "bl": (f"W*{m}", f"H-h-W*{m}"),
                "br": (f"W-w-W*{m}", f"H-h-W*{m}")}
-        layer = 0
-        for k, c in enumerate(clips):
-            if c in base or not has_video(c):
-                continue
-            st, en = sf[id(c)] / FPS, (sf[id(c)] + nf[id(c)]) / FPS
-            if c.get("layout") == "free":              # centred in its box (a filled clip is the box)
-                bx, by, bw, bh = box_px(c)
-                x, y = f"{bx}+({bw}-w)/2", f"{by}+({bh}-h)/2"
-            else:
-                x, y = pos.get(c.get("layout", "full"), pos["full"])
-            graph.append(video(k, c, False) + f",setpts=PTS-STARTPTS+{st:.4f}/TB[o{k}]")
-            graph.append(f"[b{layer}][o{k}]overlay=x={x}:y={y}:eof_action=pass:"
-                         f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
-            layer += 1
-        # Titles and captions on top of everything, in track order. The text reaches ffmpeg
-        # through a file (textfile, expansion=none), so nothing typed can change the graph.
-        if texts:
-            folder = CACHE / "text"
-            folder.mkdir(parents=True, exist_ok=True)
-            for stale in folder.glob("*.txt"):           # the last export's
-                stale.unlink(missing_ok=True)
-            if "'" in str(folder):
-                raise ValueError("Can't draw text: the cache folder's path contains a quote")
-            texts.sort(key=lambda c: (order.index(c["track"]), c["start"]))
-            for n, c in enumerate(texts):
-                file = folder / f"{n}.txt"
-                file.write_text(c["text"])
-                st = frames(c["start"]) / FPS
-                en = (frames(c["start"]) + max(1, frames(c["out"] - c["in"]))) / FPS
+
+        def piece(p, a, b, members, file):
+            """The picture from frame a to frame b, with only this piece's clips opened."""
+            vclips = sorted((c for c in members if is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
+            vtexts = sorted((c for c in members if not is_picture(c)), key=lambda c: (order.index(c["track"]), c["start"]))
+            args, graph = head + (VAAPI_DEVICE if gpu else []), []
+            for c in vclips:                       # a little extra input, trimmed exactly below
+                args += ["-ss", f"{c['in']:.4f}", "-t", f"{nf[id(c)] / FPS + 0.25:.4f}",
+                         "-i", str(self.sources[c["src"]].path)]
+
+            def black(label, n):
+                graph.append(f"color=black:s={W}x{H}:r={FPS}:d={(n + 2) / FPS:.4f},format=yuv420p,{SDR_TAGS},"
+                             f"trim=end_frame={n},setpts=PTS-STARTPTS[{label}]")
+
+            # Bottom visible track: one concat with black gaps (cheap).
+            base = [c for c in vclips if c["track"] == vclips[0]["track"] and full(c)] if vclips else []
+            segs, at, n = [], a, 0
+            for c in base:
+                k = vclips.index(c)
+                if sf[id(c)] > at:
+                    black(f"g{n}", sf[id(c)] - at)
+                    segs.append(f"[g{n}]")
+                    n += 1
+                graph.append(video(k, c, True) + f",setpts=PTS-STARTPTS[s{k}]")
+                segs.append(f"[s{k}]")
+                at = sf[id(c)] + nf[id(c)]
+            if b > at:
+                black(f"g{n}", b - at)
+                segs.append(f"[g{n}]")
+            # re-time by frame number: the joined strip is exactly sum(n) frames, so frame N sits at N/FPS
+            graph.append(f"{''.join(segs)}concat=n={len(segs)}:v=1:a=0,setpts=N/({FPS}*TB)[b0]")
+
+            # Everything else is overlaid on top, in track order.
+            layer = 0
+            for k, c in enumerate(vclips):
+                if c in base:
+                    continue
+                st, en = (sf[id(c)] - a) / FPS, (sf[id(c)] + nf[id(c)] - a) / FPS
+                if c.get("layout") == "free":          # centred in its box (a filled clip is the box)
+                    bx, by, bw, bh = box_px(c)
+                    x, y = f"{bx}+({bw}-w)/2", f"{by}+({bh}-h)/2"
+                else:
+                    x, y = pos.get(c.get("layout", "full"), pos["full"])
+                graph.append(video(k, c, False) + f",setpts=PTS-STARTPTS+{st:.4f}/TB[o{k}]")
+                graph.append(f"[b{layer}][o{k}]overlay=x={x}:y={y}:eof_action=pass:"
+                             f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
+                layer += 1
+            # Titles and captions on top of everything, in track order. The text reaches ffmpeg
+            # through a file (textfile, expansion=none), so nothing typed can change the graph.
+            for n, c in enumerate(vtexts):
+                text = work / f"{p}-{n}.txt"
+                text.write_text(c["text"])
+                st, en = (sf[id(c)] - a) / FPS, (sf[id(c)] + nf[id(c)] - a) / FPS
                 font = font_file(c["font"], c["bold"])
                 if not font:
                     raise ValueError("Can't draw text: no font found (fontconfig's fc-match is missing)")
@@ -670,19 +715,37 @@ class App:
                         f"clip(({en:.4f}-t)/{fo:.4f},0,1)" if fo > 0 else "1"]
                 alpha = f":alpha='min({ramp[0]},{ramp[1]})'" if fi > 0 or fo > 0 else ""
                 bg = f":box=1:boxcolor=black@0.55:boxborderw={max(2, round(size * 0.3))}" if c["bg"] else ""
-                graph.append(f"[b{layer}]drawtext=fontfile='{font['file']}':textfile='{file}':expansion=none:"
+                graph.append(f"[b{layer}]drawtext=fontfile='{font['file']}':textfile='{text}':expansion=none:"
                              f"fontsize={size}:fontcolor=0x{c['color'][1:]}:text_align=C:"
                              f"x=W*{c['x']:.4f}-text_w/2:y=H*{c['y']:.4f}-text_h/2{bg}{alpha}:"
                              f"enable='between(t,{st:.4f},{en - 0.5 / FPS:.4f})'[b{layer + 1}]")
                 layer += 1
-        graph.append(f"[b{layer}]" + ("scale=-2:1080," if scale1080 and H > 1080 else "")
-                     + f"format=yuv420p,{SDR_TAGS},trim=end_frame={total_f}[vout]")
+            graph.append(f"[b{layer}]format=yuv420p,{SDR_TAGS},trim=end_frame={b - a}"
+                         + (",format=nv12,hwupload" if gpu else "") + "[vout]")
+            # Every piece is encoded the same way, so they can be joined without encoding again.
+            encode = (["-c:v", "h264_vaapi", "-qp", "21"] if gpu else
+                      ["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
+            return args + ["-filter_complex", ";".join(graph), "-map", "[vout]", *encode, "-r", str(FPS),
+                           "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
+                           "-color_range", "tv", "-threads", "6", "-frames:v", str(b - a), "-f", "mpegts", str(file)]
 
-        # Audio: every clip on an unmuted track, cut to the same frames, placed and mixed.
-        for k, c in enumerate(clips):
+        gpu = gpu_encoder()
+        steps = []
+        for p, (a, b, members) in enumerate(pieces):
+            file = work / f"{p}.ts"
+            steps.append({"args": piece(p, a, b, members, file), "length": (b - a) / FPS, "weight": (b - a) / FPS})
+        (work / "pieces.txt").write_text("".join(f"file '{work / f'{p}.ts'}'\n" for p in range(len(pieces))))
+
+        # The sound: every clip on an unmuted track, cut to the same frames, placed and mixed.
+        # Only the sound of each file is read, so this run stays light however many clips there are.
+        args, graph, audio = list(head), [], []
+        for c in clips:
             gain = float(c.get("volume", 1))
             if tracks[c["track"]].get("muted") or gain <= 0 or not self.sources[c["src"]].info["audio"]:
                 continue
+            k = len(audio)
+            args += ["-vn", "-ss", f"{c['in']:.4f}", "-t", f"{nf[id(c)] / FPS + 0.25:.4f}",
+                     "-i", str(self.sources[c["src"]].path)]
             d = nf[id(c)] / FPS
             fade = min(0.02, d / 4)                     # always a tiny fade: no clicks at the cuts
             fin, fout = max(fade, min(c.get("fadeIn", 0), d / 2)), max(fade, min(c.get("fadeOut", 0), d / 2))
@@ -698,17 +761,21 @@ class App:
         graph.append(f"anullsrc=r=48000:cl=stereo,atrim=0:{total:.4f}[asil]")
         graph.append(f"[asil]{''.join(audio)}amix=inputs={len(audio) + 1}:duration=first:normalize=0,"
                      f"alimiter=limit=0.97:attack=5:release=50:level=false[aout]")
+        sound = work / "sound.m4a"
+        steps.append({"args": args + ["-filter_complex", ";".join(graph), "-map", "[aout]",
+                                      "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.4f}", str(sound)],
+                      "length": total, "weight": total / 20})
 
-        args += ["-filter_complex", ";".join(graph), "-map", "[vout]", "-map", "[aout]",
-                 "-c:v", "libx264", "-preset", "fast", "-crf", "20", "-r", str(FPS),
-                 "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709", "-color_range", "tv",
-                 "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", "-threads", "6",
-                 "-t", f"{total:.4f}", str(out)]
-        return args, total, out
+        # Join the pieces and add the sound, copying both as they are.
+        steps.append({"args": head + ["-f", "concat", "-safe", "0", "-i", str(work / "pieces.txt"),
+                                      "-i", str(sound), "-map", "0:v", "-map", "1:a", "-c", "copy",
+                                      "-movflags", "+faststart", "-t", f"{total:.4f}", str(out)],
+                      "length": total, "weight": total / 50})
+        return steps, out, work
 
     @staticmethod
-    def output_path(folder, name, small):
-        base = folder / f"{name}-edit{'-1080p' if small else ''}.mp4"
+    def output_path(folder, name, size=""):
+        base = folder / f"{name}-edit{size}.mp4"
         path, n = base, 2
         while path.exists():
             path = base.with_name(f"{base.stem}-{n}.mp4")
@@ -717,31 +784,45 @@ class App:
 
     # Each run only ever updates its own job: a cancelled run that is still winding down
     # must not touch the export started after it.
-    def run_export(self, job, args, total, out):
-        proc = subprocess.Popen(["nice", "-n", "5", *args], stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
-        self.export_proc = proc
-        err = []
-        reader = threading.Thread(target=lambda: err.extend(proc.stderr), daemon=True)
-        reader.start()
-        for line in proc.stdout:
-            m = re.match(r"out_time_us=(\d+)", line)
-            if m and total:
-                job["progress"] = min(0.999, int(m.group(1)) / 1e6 / total)
-        code = proc.wait()
-        reader.join(timeout=2)
-        if self.export_proc is proc:
-            self.export_proc = None
-        if code == 0 and job["state"] != "cancelled":
-            job.update(state="done", progress=1.0)
-        elif job["state"] != "cancelled":
-            out.unlink(missing_ok=True)
-            job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
+    def run_export(self, job, steps, out, work):
+        done, whole = 0.0, sum(s["weight"] for s in steps)
+        try:
+            for step in steps:
+                if job["state"] == "cancelled":
+                    break
+                proc = subprocess.Popen(["nice", "-n", "5", *step["args"]], stdout=subprocess.PIPE,
+                                        stderr=subprocess.PIPE, text=True)
+                self.export_proc = proc
+                err = []
+                reader = threading.Thread(target=lambda p=proc, e=err: e.extend(p.stderr), daemon=True)
+                reader.start()
+                for line in proc.stdout:
+                    m = re.match(r"out_time_us=(\d+)", line)
+                    if m and step["length"]:
+                        part = min(1.0, int(m.group(1)) / 1e6 / step["length"])
+                        job["progress"] = min(0.999, (done + step["weight"] * part) / whole)
+                code = proc.wait()
+                reader.join(timeout=2)
+                if self.export_proc is proc:
+                    self.export_proc = None
+                if code != 0:
+                    if job["state"] != "cancelled":
+                        job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
+                    break
+                done += step["weight"]
+            else:
+                if job["state"] != "cancelled":
+                    job.update(state="done", progress=1.0)
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+            if job["state"] != "done":
+                out.unlink(missing_ok=True)
 
     def cancel_export(self):
         proc = self.export_proc
-        if proc:
+        if self.busy():
             self.export["state"] = "cancelled"
+        if proc:
             proc.terminate()
             try:                                   # let it go before deleting its file, so the next
                 proc.wait(timeout=10)              # export can't pick the same name while it's still open
@@ -968,7 +1049,8 @@ def handler_for(app: App):
                 if self.path == "/api/addsource":
                     return self.send_json(app.source(body.get("path", "")).public())
                 if self.path == "/api/export":
-                    app.start_export(body.get("project") or app.load(), bool(body.get("scale1080")))
+                    height = body.get("height") or (1080 if body.get("scale1080") else None)
+                    app.start_export(body.get("project") or app.load(), height)
                     return self.send_json(app.export)
                 if self.path == "/api/export/cancel":
                     app.cancel_export()

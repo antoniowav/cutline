@@ -18,6 +18,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - Fonts: pick any installed font for text, bold or not.
 
 ### Fixed
+- Long edits with many clips export again. The export used to open every clip's video at
+  once, so a 15-minute 4K edit with a hundred cuts needed over 10 GB of memory and stalled.
+  It now renders the timeline in pieces of a few clips each, mixes the sound on its own, and
+  joins the pieces without encoding them again, still frame-exact.
+- Faster exports: the picture is encoded on the GPU (VA-API) when it can be, with x264 as
+  the fallback, and a smaller export is built at its own size instead of being rendered
+  full size and shrunk at the end. Export at original size, 1440p, 1080p or 720p.
 - The text colour now uses Cutline's own colour panel (swatches and a hex field) instead of
   the browser's dialog, which didn't show properly in the app window.
 - Phone videos filmed in landscape no longer open in a portrait canvas: the

@@ -357,6 +357,50 @@ class CutlineServer(unittest.TestCase):
                 self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want, strict=True)),
                                 f"pixel {x},{y} is {tuple(got)}, wanted about {want}")
 
+    def test_9e_many_cuts_export_in_pieces(self):
+        # Like a long talking-head edit: a side-by-side opener on V1, then dozens of cuts on V2.
+        # The export renders this in pieces and joins them; every frame must land where it was.
+        colours = {"lime": (0, 255, 0), "red": (255, 0, 0), "blue": (0, 0, 255)}
+        for name in colours:
+            ffmpeg("-f", "lavfi", "-i", f"color=c={name}:s=640x360:r={FPS}:d=1",
+                   "-c:v", "libx264", "-pix_fmt", "yuv420p", str(self.videos / f"cut-{name}.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "sdr.mp4")})
+        for name in colours:
+            self.json("/api/addsource", {"path": str(self.videos / f"cut-{name}.mp4")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        cuts = 24
+        project["clips"] = [{"id": 1, "src": ids["cut-lime.mp4"], "track": 1, "start": 0, "in": 0, "out": 1,
+                             "layout": "free", "fit": "fill", "box": {"x": 0, "y": 0, "w": 0.5, "h": 1}, "size": 0.3}]
+        project["clips"] += [{"id": 2 + i, "src": ids[f"cut-{'blue' if i % 2 else 'red'}.mp4"], "track": 2,
+                              "start": 1 + i / 2, "in": 0, "out": 0.5, "layout": "full", "size": 0.3}
+                             for i in range(cuts)]
+        self.json("/api/project", project)
+
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        info = probe(state["output"])
+        video = next(s for s in info["streams"] if s["codec_type"] == "video")
+        audio = next(s for s in info["streams"] if s["codec_type"] == "audio")
+        total = 1 + cuts / 2
+        self.assertEqual(int(video["nb_read_frames"]), total * FPS, "the pieces add up to every frame")
+        self.assertAlmostEqual(float(info["format"]["duration"]), total, delta=0.05)
+        self.assertEqual(audio["channels"], 2)
+
+        def colour_at(t):
+            return subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1",
+                                   "-vf", "crop=2:2:160:180", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+                                  capture_output=True, check=True).stdout[:3]
+
+        for t, want in ((0.5, colours["lime"]), (1.25, colours["red"]), (1.75, colours["blue"]),
+                        (total - 0.75, colours["red"]), (total - 0.25, colours["blue"])):
+            got = colour_at(t)
+            self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want, strict=True)),
+                            f"at {t}s the picture is {tuple(got)}, wanted about {want}")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

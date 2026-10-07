@@ -36,7 +36,7 @@ original files.
 - **Fades**: fade text and music in and out; the timeline shows the ramps.
 - **Smooth preview**: light 540p proxies are made in the background, on the GPU through VA-API when available, falling back to the CPU.
 - **HDR → SDR**: iPhone HLG / Dolby Vision footage is tone-mapped (libplacebo on the GPU, zscale on the CPU as a fallback), so it doesn't look washed out or red.
-- **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size or 1080p.
+- **Frame-exact export**: every clip is snapped to whole frames, so audio and video stay in sync over many cuts. Export at original size, 1440p, 1080p or 720p, encoded on the GPU (VA-API) when available. Long 4K edits are rendered in pieces, so memory stays low however many cuts there are.
 - **Native on Omarchy**: follows the current Omarchy theme colours and font live. Elsewhere it uses a Tokyo Night palette.
 
 ## Install
