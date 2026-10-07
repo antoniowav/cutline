@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-07
+
+### Added
+- Canvas shape: 16:9, 9:16 (Shorts, TikTok, Reels), 1:1 or 4:5, or like the video. The
+  short side stays, so a 1080p project turns into 1080×1920.
+- Fill (crop) for full-screen clips too, so a wide video covers a tall canvas.
+- Blurred bars: the space around a full-screen picture is filled with a blurred copy of
+  it instead of black. Applies to every selected clip at once.
+- Export presets: a small file (720p, smaller) and a GIF (480p, 15 fps, its own palette).
+- Loudness: export at -14 LUFS, how YouTube, TikTok and Spotify play it, measured in two
+  passes so the level never pumps.
+
 ## [0.2.0] - 2026-10-07
 
 ### Added
@@ -75,7 +87,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/antoniowav/cutline/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/antoniowav/cutline/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/antoniowav/cutline/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/antoniowav/cutline/releases/tag/v0.1.0

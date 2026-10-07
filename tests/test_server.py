@@ -445,6 +445,58 @@ class CutlineServer(unittest.TestCase):
         self.assertGreater(float(re.search(r"mean_volume: (-?[\d.]+) dB", level).group(1)), -30,
                            "the detached sound is in the mix")
 
+    def test_9g_tall_canvas_bars_gif_and_loudness(self):
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=2", "-f", "lavfi", "-i",
+               f"color=c=blue:s=320x360:r={FPS}:d=2", "-f", "lavfi", "-i", "sine=f=440:d=2,volume=0.03",
+               "-filter_complex", "[0][1]overlay=x=320", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               "-c:a", "aac", str(self.videos / "quiet.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "quiet.mp4")})
+        d = self.json("/api/project")
+        sid = next(sid for sid, s in d["sources"].items() if s["name"] == "quiet.mp4")
+        project = d["project"]
+        project["canvas"] = {**project["canvas"], "w": 360, "h": 640}          # 9:16, as the switcher sets it
+        clip = {"id": 1, "src": sid, "track": 1, "start": 0, "in": 0, "out": 1, "layout": "full", "size": 0.3}
+        W, H = 360, 640
+
+        def export(clips, **options):
+            self.json("/api/project", {**project, "clips": clips})
+            self.json("/api/export", {"project": {**project, "clips": clips}, **options})
+            deadline = time.time() + 120
+            while (state := self.json("/api/export"))["state"] == "running":
+                self.assertLess(time.time(), deadline, "export took too long")
+                time.sleep(0.3)
+            self.assertEqual(state["state"], "done", state["error"])
+            return state["output"]
+
+        def pixel(out, x, y):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", "0.5", "-i", out, "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return tuple(rgb[(y * W + x) * 3:(y * W + x) * 3 + 3])
+
+        near = lambda got, want: all(abs(g - w) < 70 for g, w in zip(got, want, strict=True))
+        # Fill: the wide picture covers the tall canvas, cut evenly at the sides (red left, blue right).
+        out = export([{**clip, "fit": "fill"}])
+        self.assertTrue(near(pixel(out, 20, H // 2), (255, 0, 0)) and near(pixel(out, W - 20, H // 2), (0, 0, 255)),
+                        "Fill covers the canvas from the middle of the picture")
+        # Black bars above and below by default; blurred bars fill them with the picture's colours.
+        out = export([clip])
+        self.assertTrue(near(pixel(out, 20, 40), (0, 0, 0)), "black bars by default")
+        out = export([{**clip, "bars": "blur"}])
+        top = pixel(out, 20, 40)
+        self.assertGreater(sum(top), 120, f"blurred bars aren't black: {top}")
+        self.assertTrue(near(pixel(out, 20, H // 2), (255, 0, 0)), "the picture itself stays sharp in the middle")
+        # GIF: picture only, its own palette, 15 frames a second.
+        out = export([clip], preset="gif")
+        self.assertTrue(out.endswith(".gif"))
+        gif = probe(out)["streams"]
+        self.assertEqual([s["codec_name"] for s in gif], ["gif"])
+        self.assertEqual(int(gif[0]["nb_read_frames"]), 15)
+        # Loudness: a very quiet clip comes out at about -14 LUFS.
+        out = export([{**clip, "out": 2}], loudness=True)
+        report = subprocess.run(["ffmpeg", "-nostats", "-i", out, "-af", "ebur128", "-f", "null", "-"],
+                                capture_output=True, text=True).stderr
+        lufs = float(re.findall(r"I:\s+(-?[\d.]+) LUFS", report)[-1])
+        self.assertAlmostEqual(lufs, -14, delta=1.5, msg=f"integrated loudness {lufs} LUFS")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

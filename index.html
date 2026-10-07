@@ -31,6 +31,7 @@
            align-items:center; justify-content:center; overflow:hidden; }
   #box { position:relative; background:#000; overflow:hidden; }
   #box video { position:absolute; display:none; object-fit:contain; }
+  #box canvas.bars { position:absolute; inset:0; width:100%; height:100%; display:none; filter:blur(10px); transform:scale(1.08); }
   #frame { position:absolute; display:none; z-index:1000; border:2px solid var(--accent); cursor:move;
     box-sizing:border-box; }
   #frame i { position:absolute; width:12px; height:12px; background:var(--accent); border-radius:2px; }
@@ -93,6 +94,10 @@
   <span class="name" id="name" title="Click to rename the project">Cutline</span>
   <input id="nameEdit" spellcheck="false">
   <span class="time" id="time">00:00.00 / 00:00.00</span>
+  <select id="aspect" title="Canvas shape: wide for YouTube, tall for Shorts, TikTok and Reels">
+    <option value="orig">Like the video</option><option value="16:9">16:9 wide</option>
+    <option value="9:16">9:16 tall (Shorts)</option><option value="1:1">1:1 square</option>
+    <option value="4:5">4:5 portrait</option></select>
   <span class="muted" id="canvasInfo"></span>
   <span class="spacer"></span>
   <span class="muted" id="status"></span>
@@ -100,7 +105,9 @@
   <button id="addBtn" title="Add a video, music or a voiceover (A)">＋ Media</button>
   <button id="textBtn" title="Add a title or caption at the playhead (T)">＋ Text</button>
   <button id="trackBtn" title="Add a track on top">＋ Track</button>
-  <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original size</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option></select>
+  <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original size</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option>
+    <option value="small">Small file (720p)</option><option value="gif">GIF (480p, no sound)</option></select>
+  <label class="muted" title="Make the export as loud as YouTube, TikTok and Spotify play it (-14 LUFS), so it's not too quiet or too loud"><input id="loud" type="checkbox"> Loudness</label>
   <button class="primary" id="exportBtn">Export</button>
 </header>
 <div id="stage"><div id="box"><div id="captions"></div></div><div id="frame"><i data-c="nw"></i><i data-c="ne"></i><i data-c="sw"></i><i data-c="se"></i></div></div>
@@ -116,6 +123,8 @@
     </select></label>
   <label class="muted" title="Fit shows the whole video; Fill crops it to cover its box">
     <select id="fit" disabled><option value="fit">Fit</option><option value="fill">Fill (crop)</option></select></label>
+  <label class="muted" title="What fills the canvas around a full-screen picture that doesn't cover it">
+    <select id="bars" disabled><option value="black">Black bars</option><option value="blur">Blurred bars</option></select></label>
   <button id="arrangeBtn" title="Put the clips under the playhead side by side, in equal columns">Side by side</button>
   <label class="muted">Size <input id="size" type="range" min="10" max="70" step="1" value="30" disabled> <span id="sizeVal">30%</span></label>
   <button id="rotateBtn" title="Turn the picture a quarter turn clockwise" disabled>⟳ 90°</button>
@@ -205,7 +214,7 @@ function showPrep() {
 }
 
 // ---------- history & saving ----------
-const snap = () => JSON.stringify({ tracks: P.tracks, clips: P.clips, sources: P.sources, markers: P.markers });
+const snap = () => JSON.stringify({ tracks: P.tracks, clips: P.clips, sources: P.sources, markers: P.markers, canvas: P.canvas });
 function change(fn) {
   undo.push(snap()); if (undo.length > 300) undo.shift(); redo = [];
   fn(); after();
@@ -214,7 +223,7 @@ function restore(from, to) {
   if (!from.length) return toast("Nothing to undo");
   to.push(snap()); Object.assign(P, JSON.parse(from.pop())); selected.clear(); after();
 }
-function after() { buildVideos(); t = Math.min(t, total()); sync(true); save(); showInspector(); draw(); }
+function after() { buildVideos(); t = Math.min(t, total()); fitBox(); showCanvas(); sync(true); save(); showInspector(); draw(); }
 let saveTimer;
 function save(now) {
   clearTimeout(saveTimer);
@@ -246,9 +255,30 @@ function buildVideos() {
     const v = document.createElement("video"); v.preload = "auto"; v.playsInline = true;
     v.addEventListener("seeked", () => { if (v._pending != null) { const w = v._pending; v._pending = null; v.currentTime = w; } });
     vids[tr.id] = v; box.appendChild(v); wire(tr.id);
+    const cv = document.createElement("canvas"); cv.className = "bars"; bars[tr.id] = cv; box.appendChild(cv);
   }
-  for (const id of Object.keys(vids)) if (!track(+id)) { vids[id].remove(); delete vids[id]; }
-  P.tracks.forEach((tr, i) => vids[tr.id].style.zIndex = i + 1);
+  for (const id of Object.keys(vids)) if (!track(+id)) { vids[id].remove(); delete vids[id]; bars[id].remove(); delete bars[id]; }
+  P.tracks.forEach((tr, i) => { bars[tr.id].style.zIndex = 2 * i + 1; vids[tr.id].style.zIndex = 2 * i + 2; });
+}
+// Blurred bars: a tiny copy of the picture (cropped and turned like it), drawn behind it
+// and blurred by CSS. Cheap enough to redraw every frame.
+const bars = {};
+function drawBars() {
+  if (!P) return;
+  for (const tr of P.tracks) {
+    const cv = bars[tr.id], v = vids[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
+    const on = !!c && !isAudio(c) && !isText(c) && (!c.layout || c.layout === "full") && c.fit !== "fill"
+               && c.bars === "blur" && v.readyState >= 2 && v.videoWidth > 0;
+    cv.style.display = on ? "block" : "none";
+    if (!on) continue;
+    const W = 64, H = Math.max(8, Math.round(64 * P.canvas.h / P.canvas.w));
+    if (cv.width !== W || cv.height !== H) { cv.width = W; cv.height = H; }
+    const g = cv.getContext("2d"), cr = c.crop || NO_CROP, rot = c.rotate || 0, sw = v.videoWidth, sh = v.videoHeight;
+    const cw = sw * (1 - cr.l - cr.r), ch = sh * (1 - cr.t - cr.b), turned = rot % 180 !== 0;
+    const s = Math.max(W / (turned ? ch : cw), H / (turned ? cw : ch));      // cover the canvas
+    g.setTransform(1, 0, 0, 1, W / 2, H / 2); g.rotate(rot * Math.PI / 180);
+    g.drawImage(v, cr.l * sw, cr.t * sh, cw, ch, -cw * s / 2, -ch * s / 2, cw * s, ch * s);
+  }
 }
 function fitBox() {
   const st = $("stage"), W = P.canvas.w, H = P.canvas.h;
@@ -260,7 +290,7 @@ function fitBox() {
 // The <video> keeps the whole picture at the right scale; clip-path hides the cropped edges.
 function place(v, c) {
   const bw = box.clientWidth, bh = box.clientHeight, src = S[c.src], b = currentBox(c);
-  const rot = c.rotate || 0, fill = c.layout === "free" && c.fit === "fill";
+  const rot = c.rotate || 0, fill = (c.layout === "free" || !c.layout || c.layout === "full") && c.fit === "fill";
   let { l, t: tp, r, b: bt } = c.crop || NO_CROP;
   const key = `${bw}x${bh}:${b.x},${b.y},${b.w},${b.h}:${fill}:${l},${tp},${r},${bt}:${rot}:${src?.width}`;
   if (v._place === key) return;                     // style writes are costly; only when something changed
@@ -320,6 +350,7 @@ function tick() {
     sync(false); follow(); dirty = true;
   }
   if (dirty) { dirty = false; render(); }
+  drawBars();
   requestAnimationFrame(tick);
 }
 function follow() {
@@ -485,12 +516,15 @@ function showInspector() {
   $("vol").disabled = !first || P.clips.filter(c => selected.has(c.id)).every(isText);
   const sound = one && (isAudio(one) || text);
   $("layout").disabled = !one || sound; $("size").disabled = !one || sound || one.layout === "full" || one.layout === "free";
-  $("fit").disabled = !one || sound || one.layout !== "free";
+  const media = P.clips.filter(c => selected.has(c.id) && !isText(c) && !isAudio(c));
+  const fullish = c => !c.layout || c.layout === "full" || c.layout === "free";
+  $("fit").disabled = !media.length || !media.every(fullish);
+  $("bars").disabled = !media.length || !media.every(c => (!c.layout || c.layout === "full") && c.fit !== "fill");
+  if (media.length) { $("fit").value = media[0].fit === "fill" ? "fill" : "fit"; $("bars").value = media[0].bars === "blur" ? "blur" : "black"; }
   $("rotateBtn").disabled = $("cropBtn").disabled = !one || sound;
   $("detachBtn").disabled = !one || sound || !S[one.src]?.audio;
   if (one && !sound) for (const side of "ltrb") $(`crop${side}`).value = ((one.crop || NO_CROP)[side] * 100).toFixed(1);
   if (!one || sound) $("cropPanel").classList.remove("open");
-  if (one) $("fit").value = one.fit === "fill" ? "fill" : "fit";
   showFrame();
   if (!one) { $("selInfo").textContent = gap ? `Gap of ${fmt(gap.end - gap.start)} selected — Delete closes it`
       : selected.size ? `${selected.size} clips selected` : "Click a clip to select it"; return; }
@@ -518,7 +552,34 @@ for (const side of "ltrb") {
 $("cropReset").onclick = () => { const c = selMedia(); if (c) change(() => { delete c.crop; }); };
 $("detachBtn").onclick = detachAudio;
 const selMedia = () => { const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null; return c && !isText(c) && !isAudio(c) ? c : null; };
-$("fit").onchange = () => { const c = P.clips.find(c => selected.has(c.id)); if (c) change(() => { c.fit = $("fit").value; }); };
+// Fit, Fill and the bars apply to every selected video at once (Ctrl+A, then Blurred bars).
+const selVideos = () => P.clips.filter(c => selected.has(c.id) && !isText(c) && !isAudio(c));
+$("fit").onchange = () => change(() => { for (const c of selVideos()) c.fit = $("fit").value; });
+$("bars").onchange = () => change(() => { for (const c of selVideos()) c.bars = $("bars").value; });
+
+// Canvas shape. The short side stays (a 1080p wide project becomes 1080×1920 tall), so the
+// export keeps its sharpness; clips, boxes and text are placed in shares, so they follow.
+const RATIOS = { "16:9": [16, 9], "9:16": [9, 16], "1:1": [1, 1], "4:5": [4, 5] };
+function originalSize() {
+  const s = S[P.sources[0]?.id];
+  return s?.width ? [s.width, s.height] : [P.canvas.w, P.canvas.h];
+}
+function aspectOf() {
+  const [ow, oh] = originalSize();
+  if (P.canvas.w === (ow >> 1 << 1) && P.canvas.h === (oh >> 1 << 1)) return "orig";
+  return Object.keys(RATIOS).find(k => Math.abs(P.canvas.w / P.canvas.h - RATIOS[k][0] / RATIOS[k][1]) < 0.01) || "orig";
+}
+function showCanvas() {
+  $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h} · ${Math.round(P.canvas.fps)} fps`;
+  $("aspect").value = aspectOf();
+}
+$("aspect").onchange = () => {
+  let [w, h] = originalSize();
+  const r = RATIOS[$("aspect").value];
+  if (r) { const short = Math.min(P.canvas.w, P.canvas.h); [w, h] = r[0] >= r[1] ? [short * r[0] / r[1], short] : [short, short * r[1] / r[0]]; }
+  change(() => { P.canvas = { ...P.canvas, w: Math.round(w / 2) * 2, h: Math.round(h / 2) * 2 }; });
+  if (r && r[1] > r[0]) toast("Tall canvas: set clips to Fill (crop) or Blurred bars to cover it");
+};
 
 // The box a clip covers now, as shares of the canvas (corners use the export's margin).
 function currentBox(c) {
@@ -1166,9 +1227,11 @@ let polling = null;
 $("exportBtn").onclick = async () => {
   const cur = await (await fetch("/api/export")).json();
   if (cur.state === "running") { if (confirm("Cancel the export?")) fetch("/api/export/cancel", { method: "POST" }); return; }
+  if ($("quality").value === "gif" && total() > 60 && !confirm(`A ${Math.round(total())} s GIF will be a very big file. Export it anyway?`)) return;
   await save(true);
   const r = await (await fetch("/api/export", { method: "POST",
-    body: JSON.stringify({ project: P, height: Number($("quality").value) || null }) })).json();
+    body: JSON.stringify({ project: P, height: Number($("quality").value) || null,
+      preset: ["small", "gif"].includes($("quality").value) ? $("quality").value : null, loudness: $("loud").checked }) })).json();
   if (r.state === "error") return toast(r.error, 6000);
   watchExport();
 };
@@ -1248,8 +1311,8 @@ async function init() {
   $("tfont").innerHTML = `<option value="">Default (${textFont})</option>`;
   for (const f of d.fonts || []) { const o = document.createElement("option"); o.value = o.textContent = f; o.style.fontFamily = `"${f}"`; $("tfont").appendChild(o); }
   $("name").textContent = P.name; document.title = `${P.name} — Cutline`;
-  $("canvasInfo").textContent = `${P.canvas.w}×${P.canvas.h} · ${Math.round(P.canvas.fps)} fps`;
   for (const info of Object.values(d.sources)) loadSource(info);
+  showCanvas();
   const missing = P.sources.filter(s => !d.sources[s.id]);
   if (missing.length) toast(`Missing video${missing.length > 1 ? "s" : ""}:\n${missing.map(s => s.path).join("\n")}`, 8000);
   buildVideos(); resizeTimeline(); fit(); sync(true); showInspector();

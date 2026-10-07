@@ -40,7 +40,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -92,6 +92,10 @@ TONEMAP_CPU = ("zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=
 # The GPU the export encodes on (the default VA-API device), and the export heights offered.
 VAAPI_DEVICE = ["-init_hw_device", "vaapi=va", "-filter_hw_device", "va"]
 EXPORT_HEIGHTS = (720, 1080, 1440)
+# What an export can be besides plain sizes: a small file to send, or a GIF (picture only).
+EXPORT_PRESETS = {"small": {"height": 720, "crf": 27, "qp": 28, "audio": "128k"},
+                  "gif": {"height": 480, "fps": 15}}
+LOUDNESS = "I=-14:TP=-1.5:LRA=11"   # YouTube, Spotify and most platforms play at about -14 LUFS
 # The pages only load from this server; inline script/style is how they're written.
 CSP = ("default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
        "img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; "
@@ -128,6 +132,21 @@ def gpu_encoder():
                               capture_output=True, timeout=30).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
         return False
+
+
+def louder(measured):
+    """The second loudness pass: loudnorm told what the first pass measured, so it applies one
+    fixed gain. Silence (nothing to measure) is left as it is."""
+    try:
+        m = json.loads(measured[measured.rindex("{"):measured.rindex("}") + 1])
+        values = [float(m[k]) for k in ("input_i", "input_tp", "input_lra", "input_thresh", "target_offset")]
+    except (ValueError, KeyError):
+        return "anull"
+    if not all(math.isfinite(v) for v in values):
+        return "anull"
+    i, tp, lra, thresh, offset = values
+    return (f"loudnorm={LOUDNESS}:measured_I={i}:measured_TP={tp}:measured_LRA={lra}:"
+            f"measured_thresh={thresh}:offset={offset}:linear=true,aresample=48000")
 
 
 def rotation(stream):
@@ -261,6 +280,8 @@ def clean_clip(c):
             "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
             "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
             "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit",
+            # a full-screen picture that doesn't fill the canvas: black bars or a blurred copy of itself
+            "bars": "blur" if c.get("bars") == "blur" else "black",
             "crop": clean_crop(c.get("crop")), "rotate": int(num(c.get("rotate", 0), 0, 270)) // 90 * 90,
             # the sound of a video, detached onto its own clip: it adds sound only
             "audioOnly": bool(c.get("audioOnly"))}
@@ -549,19 +570,19 @@ class App:
         return out
 
     # ---- export ----
-    def start_export(self, project, height=None):
+    def start_export(self, project, height=None, preset=None, loudness=False):
         with self.lock:
             if self.busy():
                 return
             try:
-                steps, out, work = self.build_export(project, height)
+                steps, out, work = self.build_export(project, height, preset, loudness)
             except ValueError as e:
                 self.export = {"state": "error", "progress": 0, "output": "", "error": str(e)}
                 return
             self.export = job = {"state": "running", "progress": 0.0, "output": str(out), "error": ""}
         threading.Thread(target=self.run_export, args=(job, steps, out, work), daemon=True).start()
 
-    def build_export(self, project, height=None):
+    def build_export(self, project, height=None, preset=None, loudness=False):
         """The export as a list of ffmpeg runs: the picture in pieces, then the sound, then the
         pieces joined with the sound. One run for the whole timeline would open every clip's
         video at once, and a long 4K edit then needs more memory than the computer has."""
@@ -570,7 +591,10 @@ class App:
         FPS = project["canvas"].get("fps") or 30
         # A smaller export is built at its own size from the start, not shrunk at the end:
         # every clip, box and text is placed in shares of the canvas, so it all scales along.
-        smaller = height in EXPORT_HEIGHTS and H > height
+        preset = EXPORT_PRESETS.get(preset) or {}
+        height = preset.get("height", height)
+        gif = "fps" in preset
+        smaller = (height in EXPORT_HEIGHTS or bool(preset)) and H > height
         if smaller:
             W, H = round(W * height / H / 2) * 2, height
         tracks = {t["id"]: t for t in project["tracks"]}
@@ -605,7 +629,8 @@ class App:
         total = total_f / FPS
         first_id = project["sources"][0]["id"] if project.get("sources") else clips[0]["src"]
         first = self.sources.get(first_id) or self.sources[clips[0]["src"]]
-        out = self.output_path(first.path.parent, project["name"], f"-{H}p" if smaller else "")
+        out = self.output_path(first.path.parent, project["name"], f"-{H}p" if smaller else "",
+                               ".gif" if gif else ".mp4")
         shutil.rmtree(CACHE / "export", ignore_errors=True)   # what earlier exports left behind
         work = CACHE / "export" / secrets.token_hex(4)
         work.mkdir(parents=True)
@@ -645,7 +670,7 @@ class App:
         def video(k, c, pad_full):
             _, _, bw, bh = box_px(c)
             color = tonemap() if self.sources[c["src"]].info.get("hdr") else f"format=yuv420p,{SDR_TAGS}"
-            if c.get("layout") == "free" and c.get("fit") == "fill":
+            if c.get("layout") in ("free", "full") and c.get("fit") == "fill":
                 # cover the box, cropping the overflow evenly from both sides
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}"
             else:
@@ -656,9 +681,18 @@ class App:
                 shape += (f"crop=trunc(iw*{1 - cr['l'] - cr['r']:.4f}/2)*2:trunc(ih*{1 - cr['t'] - cr['b']:.4f}/2)*2:"
                           f"trunc(iw*{cr['l']:.4f}):trunc(ih*{cr['t']:.4f}),")
             shape += {90: "transpose=1,", 180: "hflip,vflip,", 270: "transpose=2,"}.get(c["rotate"], "")
-            f = f"[{k}:v:0]fps={FPS},{color},{shape}{size}"
-            if pad_full and full(c):
-                f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
+            f = f"[{k}:v:0]fps={FPS},{color},{shape}"
+            if full(c) and c["fit"] == "fit" and c["bars"] == "blur":
+                # the bars become a blurred copy of the picture, filling the canvas behind it;
+                # blurred small and scaled up, so it costs next to nothing at 4K
+                bw8, bh8 = max(16, W // 8 // 2 * 2), max(16, H // 8 // 2 * 2)
+                f += (f"split[bg{k}][fg{k}];[bg{k}]scale={bw8}:{bh8}:force_original_aspect_ratio=increase,"
+                      f"crop={bw8}:{bh8},boxblur=6:2,scale={W}:{H},format=yuv420p[bb{k}];"
+                      f"[fg{k}]{size}[ff{k}];[bb{k}][ff{k}]overlay=(W-w)/2:(H-h)/2")
+            else:
+                f += size
+                if pad_full and full(c):
+                    f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
             # exactly n frames: hold the last frame if the source runs short, then cut
             return (f + f",setsar=1,format=yuv420p,setpts=PTS-STARTPTS,"
                         f"tpad=stop_mode=clone:stop_duration={3 / FPS:.4f},trim=end_frame={nf[id(c)]}")
@@ -738,8 +772,8 @@ class App:
             graph.append(f"[b{layer}]format=yuv420p,{SDR_TAGS},trim=end_frame={b - a}"
                          + (",format=nv12,hwupload" if gpu else "") + "[vout]")
             # Every piece is encoded the same way, so they can be joined without encoding again.
-            encode = (["-c:v", "h264_vaapi", "-qp", "21"] if gpu else
-                      ["-c:v", "libx264", "-preset", "fast", "-crf", "20"])
+            encode = (["-c:v", "h264_vaapi", "-qp", str(preset.get("qp", 21))] if gpu else
+                      ["-c:v", "libx264", "-preset", "fast", "-crf", str(preset.get("crf", 20))])
             return args + ["-filter_complex", ";".join(graph), "-map", "[vout]", *encode, "-r", str(FPS),
                            "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "bt709",
                            "-color_range", "tv", "-threads", "6", "-frames:v", str(b - a), "-f", "mpegts", str(file)]
@@ -777,35 +811,60 @@ class App:
         graph.append(f"[asil]{''.join(audio)}amix=inputs={len(audio) + 1}:duration=first:normalize=0,"
                      f"alimiter=limit=0.97:attack=5:release=50:level=false[aout]")
         sound = work / "sound.m4a"
-        steps.append({"args": args + ["-filter_complex", ";".join(graph), "-map", "[aout]",
-                                      "-c:a", "aac", "-b:a", "192k", "-t", f"{total:.4f}", str(sound)],
-                      "length": total, "weight": total / 20})
+        aac = ["-c:a", "aac", "-b:a", preset.get("audio", "192k"), "-t", f"{total:.4f}", str(sound)]
+        if gif:
+            pass                                   # a GIF has no sound
+        elif not loudness:
+            steps.append({"args": args + ["-filter_complex", ";".join(graph), "-map", "[aout]", *aac],
+                          "length": total, "weight": total / 20})
+        else:
+            # Loudness in two passes, as recommended: measure the whole mix, then turn it up or
+            # down by one fixed amount, so nothing pumps. The second run is built from what the
+            # first one measured.
+            mix = work / "mix.wav"
+            steps.append({"args": args + ["-filter_complex", ";".join(graph), "-map", "[aout]",
+                                          "-t", f"{total:.4f}", str(mix)],
+                          "length": total, "weight": total / 20})
+            steps.append({"args": ["ffmpeg", "-hide_banner", "-nostats", "-progress", "pipe:1", "-i", str(mix),
+                                   "-af", f"loudnorm={LOUDNESS}:print_format=json", "-f", "null", "-"],
+                          "length": total, "weight": total / 40})
+            steps.append({"args": lambda measured: head + ["-i", str(mix), "-af", louder(measured), *aac],
+                          "length": total, "weight": total / 40})
 
-        # Join the pieces and add the sound, copying both as they are.
-        steps.append({"args": head + ["-f", "concat", "-safe", "0", "-i", str(work / "pieces.txt"),
-                                      "-i", str(sound), "-map", "0:v", "-map", "1:a", "-c", "copy",
-                                      "-movflags", "+faststart", "-t", f"{total:.4f}", str(out)],
-                      "length": total, "weight": total / 50})
+        if gif:
+            # A GIF from the joined pieces, with its own palette, so the colours stay right.
+            steps.append({"args": head + ["-f", "concat", "-safe", "0", "-i", str(work / "pieces.txt"),
+                                          "-vf", f"fps={preset['fps']},split[a][b];[a]palettegen=stats_mode=diff[p];"
+                                                 "[b][p]paletteuse=dither=bayer:bayer_scale=4",
+                                          "-t", f"{total:.4f}", str(out)],
+                          "length": total, "weight": total / 10})
+        else:
+            # Join the pieces and add the sound, copying both as they are.
+            steps.append({"args": head + ["-f", "concat", "-safe", "0", "-i", str(work / "pieces.txt"),
+                                          "-i", str(sound), "-map", "0:v", "-map", "1:a", "-c", "copy",
+                                          "-movflags", "+faststart", "-t", f"{total:.4f}", str(out)],
+                          "length": total, "weight": total / 50})
         return steps, out, work
 
     @staticmethod
-    def output_path(folder, name, size=""):
-        base = folder / f"{name}-edit{size}.mp4"
+    def output_path(folder, name, size="", ext=".mp4"):
+        base = folder / f"{name}-edit{size}{ext}"
         path, n = base, 2
         while path.exists():
-            path = base.with_name(f"{base.stem}-{n}.mp4")
+            path = base.with_name(f"{base.stem}-{n}{ext}")
             n += 1
         return path
 
     # Each run only ever updates its own job: a cancelled run that is still winding down
     # must not touch the export started after it.
     def run_export(self, job, steps, out, work):
-        done, whole = 0.0, sum(s["weight"] for s in steps)
+        done, whole, told = 0.0, sum(s["weight"] for s in steps), ""
         try:
             for step in steps:
                 if job["state"] == "cancelled":
                     break
-                proc = subprocess.Popen(["nice", "-n", "5", *step["args"]], stdout=subprocess.PIPE,
+                args = step["args"](told) if callable(step["args"]) else step["args"]
+                proc = subprocess.Popen(["nice", "-n", "5", *args], stdout=subprocess.PIPE,
                                         stderr=subprocess.PIPE, text=True)
                 self.export_proc = proc
                 err = []
@@ -825,6 +884,7 @@ class App:
                         job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
                     break
                 done += step["weight"]
+                told = "".join(err)                # what this run printed, for a step built from it
             else:
                 if job["state"] != "cancelled":
                     job.update(state="done", progress=1.0)
@@ -1065,7 +1125,8 @@ def handler_for(app: App):
                     return self.send_json(app.source(body.get("path", "")).public())
                 if self.path == "/api/export":
                     height = body.get("height") or (1080 if body.get("scale1080") else None)
-                    app.start_export(body.get("project") or app.load(), height)
+                    app.start_export(body.get("project") or app.load(), height, body.get("preset"),
+                                     bool(body.get("loudness")))
                     return self.send_json(app.export)
                 if self.path == "/api/export/cancel":
                     app.cancel_export()
