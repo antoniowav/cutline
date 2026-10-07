@@ -1179,8 +1179,9 @@ def fetch_media(url):
         raise ValueError("Only web addresses can be fetched")
     public_host(parts.hostname)
     opener = urllib.request.build_opener(_CheckedRedirects())
-    req = urllib.request.Request(parts.geturl(), headers={"User-Agent": f"Cutline/{VERSION}"})
-    with opener.open(req, timeout=30) as resp:       # noqa: S310 - http(s) only, checked above
+    # http(s) only and a public host, both checked above (and again on every redirect)
+    req = urllib.request.Request(parts.geturl(), headers={"User-Agent": f"Cutline/{VERSION}"})  # noqa: S310
+    with opener.open(req, timeout=30) as resp:
         ctype = (resp.headers.get_content_type() or "").lower()
         name = Path(urllib.parse.unquote(urllib.parse.urlsplit(resp.geturl()).path)).name or "media"
         if not media_kind(name):
