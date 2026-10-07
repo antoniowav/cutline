@@ -222,6 +222,12 @@ def clean_box(box):
             "w": num(box.get("w", 1), 0.02, 2), "h": num(box.get("h", 1), 0.02, 2)}
 
 
+def clean_crop(crop):
+    """How much is cut off each edge of a clip's picture, as shares of it (0 to 45 % each)."""
+    crop = crop if isinstance(crop, dict) else {}
+    return {side: num(crop.get(side, 0), 0, 0.45) for side in "ltrb"}
+
+
 def safe_name(name):
     """A project name that is safe as a file name: no slashes, no control characters."""
     return re.sub(r"[^\w .,()'&+-]+", "", str(name)).strip().lstrip(".")[:80]
@@ -254,7 +260,10 @@ def clean_clip(c):
     return {**clip, "src": str(c["src"]),
             "layout": c.get("layout") if c.get("layout") in LAYOUTS else "full",
             "size": num(c.get("size", 0.3), 0.05, 1), "volume": num(c.get("volume", 1), 0, 4),
-            "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit"}
+            "box": clean_box(c.get("box")), "fit": "fill" if c.get("fit") == "fill" else "fit",
+            "crop": clean_crop(c.get("crop")), "rotate": int(num(c.get("rotate", 0), 0, 270)) // 90 * 90,
+            # the sound of a video, detached onto its own clip: it adds sound only
+            "audioOnly": bool(c.get("audioOnly"))}
 
 
 _fonts = None
@@ -579,7 +588,7 @@ class App:
         # frames. Otherwise each joined clip is rounded a little differently and over many
         # cuts the picture drifts away from the sound.
         frames = lambda x: int(round(x * FPS))
-        has_video = lambda c: self.sources[c["src"]].info.get("video", True)
+        has_video = lambda c: self.sources[c["src"]].info.get("video", True) and not c["audioOnly"]
         full = lambda c: c.get("layout", "full") == "full"
         pictures = [c for c in clips if has_video(c)]       # music and voiceovers only add sound
         picture_ids = {id(c) for c in pictures}
@@ -641,7 +650,13 @@ class App:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh}"
             else:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
-            f = f"[{k}:v:0]fps={FPS},{color},{size}"
+            # crop the picture's edges, then turn it, before it is fitted into its box
+            cr, shape = c["crop"], ""
+            if any(cr.values()):
+                shape += (f"crop=trunc(iw*{1 - cr['l'] - cr['r']:.4f}/2)*2:trunc(ih*{1 - cr['t'] - cr['b']:.4f}/2)*2:"
+                          f"trunc(iw*{cr['l']:.4f}):trunc(ih*{cr['t']:.4f}),")
+            shape += {90: "transpose=1,", 180: "hflip,vflip,", 270: "transpose=2,"}.get(c["rotate"], "")
+            f = f"[{k}:v:0]fps={FPS},{color},{shape}{size}"
             if pad_full and full(c):
                 f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
             # exactly n frames: hold the last frame if the source runs short, then cut

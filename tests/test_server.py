@@ -401,6 +401,50 @@ class CutlineServer(unittest.TestCase):
             self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want, strict=True)),
                             f"at {t}s the picture is {tuple(got)}, wanted about {want}")
 
+    def test_9f_crop_turn_and_detached_sound(self):
+        # A picture that is red on the left half and blue on the right.
+        ffmpeg("-f", "lavfi", "-i", f"color=c=red:s=640x360:r={FPS}:d=1", "-f", "lavfi", "-i",
+               f"color=c=blue:s=320x360:r={FPS}:d=1", "-filter_complex", "[0][1]overlay=x=320",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(self.videos / "halves.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "halves.mp4")})
+        self.json("/api/addsource", {"path": str(self.videos / "sdr.mp4")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        halves = {"src": ids["halves.mp4"], "track": 1, "in": 0, "out": 1, "layout": "full", "size": 0.3}
+        project["clips"] = [
+            {**halves, "id": 1, "start": 0, "crop": {"l": 0.5, "t": 0, "r": 0, "b": 0}},   # only the blue half
+            {**halves, "id": 2, "start": 1, "rotate": 90},                                # red on top, blue below
+            # sdr.mp4's sound only, detached from its picture: it must add sound and no picture
+            {"id": 3, "src": ids["sdr.mp4"], "track": 2, "start": 0, "in": 0, "out": 2, "layout": "full",
+             "size": 0.3, "audioOnly": True},
+        ]
+        self.json("/api/project", project)
+
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        W, H = 640, 360
+
+        def pixel(t, x, y):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1",
+                                  "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return rgb[(y * W + x) * 3:(y * W + x) * 3 + 3]
+
+        red, blue, black = (255, 0, 0), (0, 0, 255), (0, 0, 0)
+        for t, x, y, want, why in ((0.5, W // 2, H // 2, blue, "the cropped clip shows the blue half"),
+                                   (0.5, 20, H // 2, black, "the cropped half-width picture has bars beside it"),
+                                   (1.5, W // 2, 60, red, "turned clockwise, the left half is on top"),
+                                   (1.5, W // 2, H - 60, blue, "turned clockwise, the right half is below")):
+            got = pixel(t, x, y)
+            self.assertTrue(all(abs(g - w) < 70 for g, w in zip(got, want, strict=True)),
+                            f"{why}: pixel {x},{y} at {t}s is {tuple(got)}, wanted about {want}")
+        level = subprocess.run(["ffmpeg", "-i", state["output"], "-af", "volumedetect", "-f", "null", "-"],
+                               capture_output=True, text=True).stderr
+        self.assertGreater(float(re.search(r"mean_volume: (-?[\d.]+) dB", level).group(1)), -30,
+                           "the detached sound is in the mix")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

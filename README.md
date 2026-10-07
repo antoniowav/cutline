@@ -24,6 +24,9 @@ original files.
 - **Editing**: split at the playhead, trim to the playhead, drag edges to trim or extend, ripple delete (or keep the gap), undo/redo.
 - **Selection**: click, Shift-click, box-select by dragging over empty space, or select a **gap** and delete it to close it.
 - **Per-clip volume**, 0–200 %, with the waveform following along.
+- **Copy and paste**: Ctrl+C / Ctrl+X / Ctrl+V anything selected, even into another project; **Alt**-drag drops a copy.
+- **Markers**: **M** at the playhead, **[** / **]** to jump; clips snap to them.
+- **Detach audio** onto its own clip, and **crop** or **turn** any clip's picture.
 - **Picture-in-picture**: put any clip full screen or in a corner, at 10–70 % size.
 - **Free layout**: drag any clip anywhere in the preview and resize it from its corners, with snapping
   to halves, thirds and quarters. **Side by side** puts the clips under the playhead in equal

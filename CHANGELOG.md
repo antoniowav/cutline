@@ -16,6 +16,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
   colour, give it a box, drag it in the preview; it's trimmed and moved on the timeline like a clip.
 - Fades: fade text and music in and out (seconds each way); the timeline shows the ramps.
 - Fonts: pick any installed font for text, bold or not.
+- Copy, cut and paste (Ctrl+C / Ctrl+X / Ctrl+V): anything selected, pasted at the playhead
+  on the first free track. The clipboard works across projects and brings the videos along.
+- Alt-drag a clip (video, sound or text) to drop a copy instead of moving it.
+- Markers: M puts one at the playhead (or takes it away); [ and ] jump between them, and
+  clips snap to them.
+- Detach audio: a video clip's sound becomes a clip of its own, to move and trim apart.
+- Crop and turn: cut off any edge of a clip's picture and turn it a quarter at a time.
 
 ### Fixed
 - Long edits with many clips export again. The export used to open every clip's video at

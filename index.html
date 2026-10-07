@@ -59,6 +59,12 @@
   #swatches button { width:22px; height:22px; padding:0; border:1px solid var(--muted); border-radius:3px; }
   #swatches button.on { outline:2px solid var(--accent); outline-offset:1px; }
   #thex { width:100%; box-sizing:border-box; }
+  #cropWrap { position:relative; }
+  #cropPanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
+    border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; }
+  #cropPanel.open { display:flex; }
+  #cropPanel label { display:flex; justify-content:space-between; gap:8px; }
+  #cropPanel input[type=range] { width:120px; }
   .guide { position:absolute; z-index:999; background:var(--accent); opacity:.7; pointer-events:none; }
   #timelineWrap { flex:none; position:relative; border-top:1px solid var(--bg3); }
   canvas { display:block; width:100%; height:100%; }
@@ -112,6 +118,15 @@
     <select id="fit" disabled><option value="fit">Fit</option><option value="fill">Fill (crop)</option></select></label>
   <button id="arrangeBtn" title="Put the clips under the playhead side by side, in equal columns">Side by side</button>
   <label class="muted">Size <input id="size" type="range" min="10" max="70" step="1" value="30" disabled> <span id="sizeVal">30%</span></label>
+  <button id="rotateBtn" title="Turn the picture a quarter turn clockwise" disabled>⟳ 90°</button>
+  <span id="cropWrap"><button id="cropBtn" title="Cut off the picture's edges" disabled>Crop</button>
+    <span id="cropPanel">
+      <label class="muted">Left <input id="cropl" type="range" min="0" max="45" step="0.5" value="0"></label>
+      <label class="muted">Top <input id="cropt" type="range" min="0" max="45" step="0.5" value="0"></label>
+      <label class="muted">Right <input id="cropr" type="range" min="0" max="45" step="0.5" value="0"></label>
+      <label class="muted">Bottom <input id="cropb" type="range" min="0" max="45" step="0.5" value="0"></label>
+      <button id="cropReset">No crop</button></span></span>
+  <button id="detachBtn" title="Put this clip's sound on its own clip, so it can be moved and trimmed apart" disabled>Detach audio</button>
   </span>
   <span id="textTools" style="display:none">
     <textarea id="textInput" rows="1" placeholder="Type the text" title="Enter starts a new line"></textarea>
@@ -132,7 +147,7 @@
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
   <b>Space</b> play · <b>S</b> split · <b>Del</b> remove (<b>Shift</b> keeps gap) · <b>Q</b>/<b>W</b> trim to playhead ·
-  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video or audio · <b>T</b> add text · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
+  drag clips across time &amp; tracks · drag a clip's <b>edge</b> to trim/extend · drag on empty space to <b>box-select</b> · in the preview, drag a <b>Free</b> clip to move it, a corner to resize (<b>Shift</b> keeps shape, <b>Alt</b> no snap) · click a <b>gap</b> + Del to close it · <b>A</b> add video or audio · <b>T</b> add text · <b>Alt</b>+drag copies · <b>Ctrl+C</b>/<b>X</b>/<b>V</b> copy, cut, paste at the playhead · <b>M</b> marker, <b>[</b>/<b>]</b> jump to one · <b>←/→</b> frame (<b>Shift</b> 1s) · swipe scrolls ·
   pinch / <b>Ctrl</b>+scroll zooms · <b>0</b> fit · <b>Ctrl+Z</b> undo
 </footer>
 <div id="picker"><div class="panel">
@@ -169,7 +184,8 @@ const trackIdx = id => P.tracks.findIndex(tr => tr.id === id);
 const track = id => P.tracks.find(tr => tr.id === id);
 const nextId = () => P.clips.reduce((a, c) => Math.max(a, c.id), 0) + 1;
 const FULL_BOX = { x: 0, y: 0, w: 1, h: 1 };
-const isAudio = c => S[c.src]?.video === false;     // music or a voiceover: sound only
+const isAudio = c => c.audioOnly || S[c.src]?.video === false;   // music, a voiceover or detached sound: sound only
+const NO_CROP = { l: 0, t: 0, r: 0, b: 0 };
 const isText = c => c.kind === "text";             // a title or caption, drawn over everything
 // How far a clip has faded in or out at time x: 0..1, as the export ramps it.
 function fadeAt(c, x) {
@@ -189,7 +205,7 @@ function showPrep() {
 }
 
 // ---------- history & saving ----------
-const snap = () => JSON.stringify({ tracks: P.tracks, clips: P.clips, sources: P.sources });
+const snap = () => JSON.stringify({ tracks: P.tracks, clips: P.clips, sources: P.sources, markers: P.markers });
 function change(fn) {
   undo.push(snap()); if (undo.length > 300) undo.shift(); redo = [];
   fn(); after();
@@ -240,21 +256,29 @@ function fitBox() {
   box.style.width = `${Math.floor(W * s)}px`; box.style.height = `${Math.floor(H * s)}px`;
   if (typeof showFrame === "function") { showFrame(); drawCaptions(); }
 }
+// Where a clip's picture lands: its box, minus the crop, turned, fitted like the export does it.
+// The <video> keeps the whole picture at the right scale; clip-path hides the cropped edges.
 function place(v, c) {
-  const bw = box.clientWidth, bh = box.clientHeight;
-  const b = c.box || FULL_BOX;
-  const key = `${bw}x${bh}:${c.layout}:${c.size}:${b.x},${b.y},${b.w},${b.h}:${c.fit}`;
+  const bw = box.clientWidth, bh = box.clientHeight, src = S[c.src], b = currentBox(c);
+  const rot = c.rotate || 0, fill = c.layout === "free" && c.fit === "fill";
+  let { l, t: tp, r, b: bt } = c.crop || NO_CROP;
+  const key = `${bw}x${bh}:${b.x},${b.y},${b.w},${b.h}:${fill}:${l},${tp},${r},${bt}:${rot}:${src?.width}`;
   if (v._place === key) return;                     // style writes are costly; only when something changed
   v._place = key;
-  v.style.objectFit = c.layout === "free" && c.fit === "fill" ? "cover" : "contain";
-  if (c.layout === "free") {
-    Object.assign(v.style, { left: `${b.x * bw}px`, top: `${b.y * bh}px`, width: `${b.w * bw}px`, height: `${b.h * bh}px` });
-    return;
+  const sw = src?.width || P.canvas.w, sh = src?.height || P.canvas.h, turned = rot % 180 !== 0;
+  const BW = b.w * bw, BH = b.h * bh;
+  let cw = sw * (1 - l - r), ch = sh * (1 - tp - bt);
+  if (fill) {                    // cover the box: crop the overflow evenly from both sides, as the export does
+    const want = BW / BH, wide = (turned ? ch / cw : cw / ch) > want;
+    if (wide !== turned) { const n = wide ? ch * want : ch / want, cut = (cw - n) / sw / 2; l += cut; r += cut; cw = n; }
+    else { const n = wide ? cw * want : cw / want, cut = (ch - n) / sh / 2; tp += cut; bt += cut; ch = n; }
   }
-  if (!c.layout || c.layout === "full") { Object.assign(v.style, { left: "0px", top: "0px", width: `${bw}px`, height: `${bh}px` }); return; }
-  const w = bw * c.size, h = bh * c.size, m = bw * 0.03;
-  const x = c.layout.endsWith("l") ? m : bw - w - m, y = c.layout.startsWith("t") ? m : bh - h - m;
-  Object.assign(v.style, { left: `${x}px`, top: `${y}px`, width: `${w}px`, height: `${h}px` });
+  const s = Math.min(BW / (turned ? ch : cw), BH / (turned ? cw : ch));
+  const ox = (l * sw + cw / 2) * s, oy = (tp * sh + ch / 2) * s;     // the crop's centre, inside the element
+  Object.assign(v.style, { objectFit: "fill", width: `${sw * s}px`, height: `${sh * s}px`,
+    left: `${b.x * bw + BW / 2 - ox}px`, top: `${b.y * bh + BH / 2 - oy}px`,
+    transformOrigin: `${ox}px ${oy}px`, transform: rot ? `rotate(${rot}deg)` : "",
+    clipPath: l || tp || r || bt ? `inset(${tp * 100}% ${r * 100}% ${bt * 100}% ${l * 100}%)` : "" });
 }
 // While a seek is running, only remember the latest target: scrubbing no longer queues up seeks.
 function seekTo(v, want) {
@@ -365,6 +389,76 @@ function freeStart(trackId, start, d, ignore) {   // first spot >= start where [
   }
   return s;
 }
+// The first track (bottom up) where [start, start + d) is free, or a new one on top.
+function roomyTrack(start, d, from = 0, name = "V") {
+  const tr = P.tracks.slice(Math.max(0, from)).find(tr => freeStart(tr.id, start, d) - start < 1e-6);
+  if (tr) return tr;
+  const fresh = { id: P.tracks.reduce((a, x) => Math.max(a, x.id), 0) + 1, name: `${name}${P.tracks.length + 1}`, hidden: false, muted: false };
+  P.tracks.push(fresh); return fresh;
+}
+// Detach audio: the clip's sound becomes a clip of its own (sound only) on a free track,
+// and the picture is silenced, so the two can be moved and trimmed apart.
+function detachAudio() {
+  const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null;
+  if (!c || isText(c) || isAudio(c) || !S[c.src]?.audio) return toast("Select a video clip with sound");
+  change(() => {
+    const sound = { ...c, id: nextId(), audioOnly: true, layout: "full", fadeIn: 0, fadeOut: 0 };
+    delete sound.crop; delete sound.rotate;
+    sound.track = roomyTrack(c.start, len(c), 0, "A").id;
+    c.volume = 0;
+    P.clips.push(sound); selected = new Set([sound.id]);
+  });
+  resizeTimeline(); toast("Sound detached onto its own clip");
+}
+// Markers: M drops one at the playhead (or takes away the one there); clips snap to them.
+function toggleMarker() {
+  const near = (P.markers || []).findIndex(m => Math.abs(m - t) < frame() * 1.5);
+  change(() => {
+    P.markers = P.markers || [];
+    if (near >= 0) P.markers.splice(near, 1); else P.markers = [...P.markers, t].sort((a, b) => a - b);
+  });
+}
+function jumpMarker(dir) {
+  const ms = (P.markers || []).filter(m => dir > 0 ? m > t + 1e-3 : m < t - 1e-3);
+  if (!ms.length) return toast(P.markers?.length ? "No more markers that way" : "No markers yet: press M to add one");
+  pause(); seek(dir > 0 ? Math.min(...ms) : Math.max(...ms)); follow();
+}
+// Copy, cut and paste. The clipboard outlives the project, so clips can move between projects;
+// a pasted clip whose video isn't in this project yet brings it along.
+const CLIPBOARD = "cutline.clipboard";
+let clipboard = null;
+function copySelection(cut) {
+  const clips = P.clips.filter(c => selected.has(c.id));
+  if (!clips.length) return toast(`Select something to ${cut ? "cut" : "copy"}`);
+  clipboard = { clips: JSON.parse(JSON.stringify(clips)), rows: clips.map(c => trackIdx(c.track)),
+                sources: P.sources.filter(s => clips.some(c => c.src === s.id)) };
+  try { localStorage.setItem(CLIPBOARD, JSON.stringify(clipboard)); } catch { /* the in-page copy still works */ }
+  if (cut) remove(false); else toast(`Copied ${clips.length === 1 ? "1 clip" : `${clips.length} clips`}`);
+}
+async function paste() {
+  let cb = clipboard;
+  if (!cb) try { cb = JSON.parse(localStorage.getItem(CLIPBOARD)); } catch { cb = null; }
+  if (!cb?.clips?.length) return toast("Nothing to paste: copy something first (Ctrl+C)");
+  const added = [];
+  for (const s of cb.sources || []) if (!P.sources.some(x => x.id === s.id)) {
+    const r = await (await fetch("/api/addsource", { method: "POST", body: JSON.stringify({ path: s.path }) })).json();
+    if (r.error) return toast(`Can't paste: ${r.error}`);
+    loadSource(r); added.push({ id: r.id, path: r.path });
+  }
+  const at = t, first = Math.min(...cb.clips.map(c => c.start));
+  change(() => {
+    P.sources.push(...added);
+    const fresh = [];
+    cb.clips.forEach((c, i) => {
+      const start = at + c.start - first;
+      const tr = roomyTrack(start, len(c), Math.min(cb.rows[i], P.tracks.length - 1), isText(c) ? "T" : "V");
+      const copy = { ...JSON.parse(JSON.stringify(c)), id: nextId(), track: tr.id, start };
+      P.clips.push(copy); fresh.push(copy.id);
+    });
+    selected = new Set(fresh); gap = null;
+  });
+  resizeTimeline();
+}
 function addTrack() {
   change(() => { const id = P.tracks.reduce((a, tr) => Math.max(a, tr.id), 0) + 1;
     P.tracks.push({ id, name: `V${P.tracks.length + 1}`, hidden: false, muted: false }); });
@@ -392,6 +486,10 @@ function showInspector() {
   const sound = one && (isAudio(one) || text);
   $("layout").disabled = !one || sound; $("size").disabled = !one || sound || one.layout === "full" || one.layout === "free";
   $("fit").disabled = !one || sound || one.layout !== "free";
+  $("rotateBtn").disabled = $("cropBtn").disabled = !one || sound;
+  $("detachBtn").disabled = !one || sound || !S[one.src]?.audio;
+  if (one && !sound) for (const side of "ltrb") $(`crop${side}`).value = ((one.crop || NO_CROP)[side] * 100).toFixed(1);
+  if (!one || sound) $("cropPanel").classList.remove("open");
   if (one) $("fit").value = one.fit === "fill" ? "fill" : "fit";
   showFrame();
   if (!one) { $("selInfo").textContent = gap ? `Gap of ${fmt(gap.end - gap.start)} selected — Delete closes it`
@@ -408,6 +506,18 @@ $("layout").onchange = () => {
     c.layout = $("layout").value;
   });
 };
+$("rotateBtn").onclick = () => { const c = selMedia(); if (c) change(() => { c.rotate = ((c.rotate || 0) + 90) % 360; }); };
+$("cropBtn").onclick = (e) => { e.stopPropagation(); $("cropPanel").classList.toggle("open"); };
+$("cropPanel").onclick = (e) => e.stopPropagation();
+document.addEventListener("click", () => $("cropPanel").classList.remove("open"));
+for (const side of "ltrb") {
+  $(`crop${side}`).oninput = () => { const c = selMedia(); if (!c) return; sliderStart();
+    c.crop = { ...NO_CROP, ...c.crop, [side]: $(`crop${side}`).value / 100 }; sync(true); };
+  $(`crop${side}`).onchange = sliderEnd;
+}
+$("cropReset").onclick = () => { const c = selMedia(); if (c) change(() => { delete c.crop; }); };
+$("detachBtn").onclick = detachAudio;
+const selMedia = () => { const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null; return c && !isText(c) && !isAudio(c) ? c : null; };
 $("fit").onchange = () => { const c = P.clips.find(c => selected.has(c.id)); if (c) change(() => { c.fit = $("fit").value; }); };
 
 // The box a clip covers now, as shares of the canvas (corners use the export's margin).
@@ -671,7 +781,7 @@ function render() {
   // clips
   ctx.save(); ctx.beginPath(); ctx.rect(HEAD, RULER, W - HEAD, H - RULER); ctx.clip();
   for (const c of P.clips) {
-    if (drag.active && drag.ids.has(c.id)) continue;
+    if (drag.active && drag.ids.has(c.id) && !drag.copy) continue;
     drawClip(c, X(c.start), rowY(trackIdx(c.track)), 1);
   }
   if (drag.active) for (const g of drag.ghosts) {
@@ -688,6 +798,13 @@ function render() {
     const x = Math.round(X(s)) + 0.5; if (x < HEAD) continue;
     ctx.beginPath(); ctx.moveTo(x, RULER - 7); ctx.lineTo(x, RULER); ctx.stroke();
     ctx.fillText(step < 1 ? fmt(s) : fmt(s).slice(0, 5), x + 3, 14);
+  }
+  for (const m of P.markers || []) {
+    const mx = Math.round(X(m)) + 0.5; if (mx < HEAD || mx > W) continue;
+    ctx.fillStyle = colors.yellow || colors.accent;
+    ctx.beginPath(); ctx.moveTo(mx - 5, 2); ctx.lineTo(mx + 5, 2); ctx.lineTo(mx + 5, 10); ctx.lineTo(mx, 15); ctx.lineTo(mx - 5, 10); ctx.fill();
+    ctx.strokeStyle = colors.yellow || colors.accent; ctx.globalAlpha = 0.35; ctx.setLineDash([2, 4]);
+    ctx.beginPath(); ctx.moveTo(mx, RULER); ctx.lineTo(mx, H); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
   if (gap && track(gap.track)) {
     const gx = X(gap.start), gw = (gap.end - gap.start) * pps, gy = rowY(trackIdx(gap.track));
@@ -741,7 +858,7 @@ function drawClip(c, x0, y0, alpha) {
   ctx.beginPath(); ctx.rect(x0, y0, Math.max(1, w), h); ctx.clip();
   ctx.fillStyle = isText(c) ? colors.selection_background || colors.lighter_background : src ? colors.lighter_background : colors.red;
   ctx.fillRect(x0, y0, w, h);
-  if (src?.sprite) {
+  if (src?.sprite && !c.audioOnly) {
     const tw = src.thumbW * THUMB / src.thumbH;
     for (let x = x0 + Math.max(0, Math.floor((HEAD - x0) / tw)) * tw; x < Math.min(x0 + w, W); x += tw) {
       const at = c.in + (x - x0) / pps;
@@ -770,7 +887,8 @@ function drawClip(c, x0, y0, alpha) {
       ctx.beginPath(); ctx.moveTo(x1 - fo, y0); ctx.lineTo(x1, y0 + h); ctx.stroke(); }
     ctx.lineWidth = 1;
   }
-  const label = isText(c) ? `T · ${c.text.split("\n")[0] || "(empty text)"}` : (src ? src.name : "offline") + (c.layout === "free" ? " · FREE" : c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
+  const label = isText(c) ? `T · ${c.text.split("\n")[0] || "(empty text)"}` : (src ? src.name : "offline") + (c.audioOnly ? " · sound" : "")
+              + (c.rotate ? ` · ${c.rotate}°` : "") + (c.crop && Object.values(c.crop).some(Boolean) ? " · cropped" : "") + (c.layout === "free" ? " · FREE" : c.layout && c.layout !== "full" ? ` · ${c.layout.toUpperCase()} ${Math.round(c.size * 100)}%` : "")
               + (vol(c) !== 1 ? ` · vol ${Math.round(vol(c) * 100)}%` : "");
   ctx.font = `11px ${colors.font}`; const lw = ctx.measureText(label).width + 8;
   ctx.globalAlpha = alpha * 0.75; ctx.fillStyle = colors.dark_background; ctx.fillRect(x0 + 2, y0 + 2, Math.min(lw, w - 4), 15);
@@ -855,11 +973,11 @@ canvas.addEventListener("mousedown", e => {
   }
   if (e.shiftKey) selected.has(c.id) ? selected.delete(c.id) : selected.add(c.id);
   else if (!selected.has(c.id)) selected = new Set([c.id]);
-  drag.primary = c; drag.ids = new Set(selected);
+  drag.primary = c; drag.ids = new Set(selected); drag.copy = e.altKey;
   pause(); seek(T(x)); showInspector(); draw();
 });
 function snapPoints(ignore) {
-  const pts = [0, t];
+  const pts = [0, t, ...(P.markers || [])];
   for (const c of P.clips) if (!ignore.has(c.id)) pts.push(c.start, end(c));
   return pts;
 }
@@ -906,6 +1024,8 @@ window.addEventListener("mousemove", e => {
   }
   if (!drag.active && Math.hypot(x - drag.x0, y - drag.y0) > 6) drag.active = true;
   if (!drag.active || !drag.primary) return;
+  drag.copy = e.altKey;                                      // Alt, held or let go mid-drag, copies instead of moving
+  canvas.style.cursor = drag.copy ? "copy" : "grabbing";
   let dt = (x - drag.x0) / pps;
   const p = drag.primary, dRow = rowAt(y) - trackIdx(p.track);
   drag.snap = null; let best = 8 / pps;
@@ -926,16 +1046,20 @@ window.addEventListener("mouseup", () => {
   if (drag.trim) {
     if (drag.before !== snap()) { undo.push(drag.before); redo = []; after(); }
   } else if (drag.active && drag.ghosts.length) {
-    const ghosts = drag.ghosts;
+    const ghosts = drag.ghosts, copy = drag.copy;
     change(() => {
+      const fresh = [];
       for (const g of ghosts.sort((a, b) => a.start - b.start)) {
-        const c = P.clips.find(c => c.id === g.id);
+        let c = P.clips.find(c => c.id === g.id);
+        if (copy) { c = { ...JSON.parse(JSON.stringify(c)), id: nextId() }; P.clips.push(c); fresh.push(c.id); }
         c.track = g.track; c.start = freeStart(g.track, g.start, len(c), c.id);
       }
+      if (copy) selected = new Set(fresh);
     });
   }
   Object.assign(drag, { down: false, active: false, scrub: false, ids: new Set(), ghosts: [], snap: null, primary: null,
-                       trim: null, trimClip: null, before: null, box: null });
+                       trim: null, trimClip: null, before: null, box: null, copy: false });
+  canvas.style.cursor = "default";
   draw();
 });
 canvas.addEventListener("wheel", e => {
@@ -957,6 +1081,9 @@ window.addEventListener("keydown", e => {
   else if (ctrl && k.toLowerCase() === "z") { e.preventDefault(); e.shiftKey ? restore(redo, undo) : restore(undo, redo); }
   else if (ctrl && k.toLowerCase() === "y") { e.preventDefault(); restore(redo, undo); }
   else if (ctrl && k.toLowerCase() === "s") { e.preventDefault(); save(true); toast("Saved"); }
+  else if (ctrl && k.toLowerCase() === "c") { e.preventDefault(); copySelection(false); }
+  else if (ctrl && k.toLowerCase() === "x") { e.preventDefault(); copySelection(true); }
+  else if (ctrl && k.toLowerCase() === "v") { e.preventDefault(); paste(); }
   else if (ctrl && k.toLowerCase() === "a") { e.preventDefault(); selected = new Set(P.clips.map(c => c.id)); showInspector(); }
   else if (ctrl) return;
   else if (k === "s" || k === "S") split();
@@ -965,6 +1092,9 @@ window.addEventListener("keydown", e => {
   else if (k === "w") trim("end");
   else if (k === "a") openPicker();
   else if (k === "t") addText();
+  else if (k === "m" || k === "M") toggleMarker();
+  else if (k === "[") jumpMarker(-1);
+  else if (k === "]") jumpMarker(1);
   else if (k === "ArrowLeft" || k === "ArrowRight") {
     e.preventDefault(); pause();
     seek(t + (e.shiftKey ? 1 : e.altKey ? 5 : frame()) * (k === "ArrowLeft" ? -1 : 1)); follow();
