@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-08
+
+### Added
+- Auto Shorts (＋ Title → Auto Shorts…): Cutline listens to the edit, picks the best moments
+  (Claude Code reads the transcript text and picks them, or Cutline scores them itself),
+  checks them against the transcript, cuts the pauses, makes each 9:16 with the crop on the
+  speaker's face (OpenCV, with the YuNet model bundled), and adds word-by-word captions and a
+  title. Each Short is a new project to check and export.
+
+### Changed
+- A crop can now take up to 90 % off a side (a wide video cropped to a tall strip).
+
 ## [0.8.0] - 2026-10-07
 
 ### Added
@@ -167,7 +179,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/antoniowav/cutline/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/antoniowav/cutline/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/antoniowav/cutline/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/antoniowav/cutline/compare/v0.5.0...v0.6.0

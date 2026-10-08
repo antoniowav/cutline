@@ -74,6 +74,14 @@
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
   #silencePanel.open { display:flex; }
   #silencePanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #shortsPanel { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:12; align-items:center; justify-content:center; }
+  #shortsPanel.open { display:flex; }
+  #shortsPanel .panel { background:var(--bg); border:1px solid var(--accent); width:min(520px, 92vw); padding:14px; display:flex;
+    flex-direction:column; gap:10px; white-space:normal; max-height:86vh; overflow:auto; }
+  #shortsPanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #shResults { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:8px; }
+  #shResults li { border:1px solid var(--bg3); border-radius:6px; padding:8px 10px; display:flex; gap:10px; align-items:center; }
+  #shResults li div { flex:1; }
   #ccPanel { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:12; align-items:center; justify-content:center; }
   #ccPanel.open { display:flex; }
   #ccPanel .panel { background:var(--bg); border:1px solid var(--accent); width:min(460px, 92vw); padding:14px; display:flex;
@@ -155,7 +163,7 @@
   <button id="textBtn" title="Add a title or caption at the playhead (T)">＋ Text</button>
   <select id="tplSel" title="Add a ready-made title at the playhead">
     <option value="">＋ Title</option><option value="title">Big title</option><option value="lower">Lower third</option>
-    <option value="subscribe">Subscribe</option><option value="chapter">Chapter</option><option value="cc">Auto captions…</option></select>
+    <option value="subscribe">Subscribe</option><option value="chapter">Chapter</option><option value="cc">Auto captions…</option><option value="shorts">Auto Shorts…</option></select>
   <button id="drawerBtn" title="GIFs, stickers and sound effects: find them in your browser, they show up here">GIFs &amp; SFX</button>
   <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option>
     <option value="small" title="720p, a smaller file">Small file</option><option value="gif" title="480p, 15 fps, no sound">GIF</option>
@@ -312,6 +320,18 @@
     <option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="pt">Portuguese</option>
     <option value="nl">Dutch</option></select></label>
   <span class="row" style="display:flex; gap:8px; justify-content:flex-end"><button id="ccClose">Close</button><button id="ccGo" class="primary">Make captions</button></span>
+</div></div>
+<div id="shortsPanel" class="sheet"><div class="panel">
+  <b>Auto Shorts</b>
+  <span class="muted">Cutline listens to this edit, picks the best moments, cuts the pauses, makes them tall (9:16) with the
+    crop on the speaker, and adds word-by-word captions and a title. Each Short is a new project to check and export.</span>
+  <span id="shStatus" class="muted"></span>
+  <label class="muted">How many <select id="shCount"><option value="1">1</option><option value="2">2</option><option value="3" selected>3</option></select></label>
+  <label class="muted">Length <select id="shLength"><option value="short">15–30 seconds</option><option value="long">30–60 seconds</option></select></label>
+  <label class="muted" id="shClaudeRow" title="Only the transcript's text is sent, to pick the moments; the video and sound stay here">
+    <span><input id="shClaude" type="checkbox" checked> Let Claude Code pick the moments (sends the transcript text to Anthropic)</span></label>
+  <ul id="shResults"></ul>
+  <span style="display:flex; gap:8px; justify-content:flex-end"><button id="shClose">Close</button><button id="shGo" class="primary">Make Shorts</button></span>
 </div></div>
 <div id="dropHint">Drop to add at the playhead</div>
 <div id="toast"></div>
@@ -922,7 +942,7 @@ function showInspector() {
   $("duckLabel").style.display = one && isAudio(one) ? "" : "none"; if (one) $("duck").checked = !!one.duck;
   const vids_ = selVideos(); $("colourBtn").disabled = !vids_.length;
   if (!vids_.length) $("colourPanel").classList.remove("open"); else showColour(vids_[0]);
-  $("speed").disabled = !one || text; if (one && !text) $("speed").value = String(spd(one));
+  $("speed").disabled = !one || text; $("speed").value = one && !text ? String(spd(one)) : "1";
   const before = vid && fullPicture(one) ? prevAbut(one) : null;
   $("transSel").disabled = $("transDur").disabled = !before;
   $("transSel").value = before && one.trans ? one.trans.type : ""; $("transDur").value = before && one.trans ? one.trans.dur : 0.5;
@@ -1279,7 +1299,9 @@ function addTemplate(kind) {
   $("textInput").focus(); $("textInput").select();
 }
 $("tplSel").onchange = () => {
-  if ($("tplSel").value === "cc") { $("ccPanel").classList.add("open"); refreshCC(); } else addTemplate($("tplSel").value);
+  if ($("tplSel").value === "cc") { $("ccPanel").classList.add("open"); refreshCC(); }
+  else if ($("tplSel").value === "shorts") { $("shortsPanel").classList.add("open"); refreshShorts(); }
+  else addTemplate($("tplSel").value);
   $("tplSel").value = ""; };
 
 // ---------- sound: ducking and the silence cutter ----------
@@ -1337,6 +1359,43 @@ async function cutSilences() {
   toast(removed > 0.05 ? `Cut ${fmt(removed)} of pauses` : "No pauses found: try a higher level or shorter pauses", 4000);
 }
 $("silenceGo").onclick = cutSilences;
+
+// ---------- Auto Shorts ----------
+async function refreshShorts() {
+  const d = await (await fetch("/api/shorts")).json();
+  const ready = d.whisper && d.models;
+  $("shStatus").textContent = !ready ? "Auto Shorts listen with auto captions: set those up first (＋ Title → Auto captions…)."
+    : (d.opencv ? "" : "Without OpenCV the crop stays in the middle; with it (python-opencv) it follows the speaker's face. ")
+      + (d.claude ? "" : "Claude Code isn't installed: Cutline picks the moments itself.");
+  $("shClaude").disabled = !d.claude; if (!d.claude) $("shClaude").checked = false;
+  $("shGo").disabled = !ready;
+}
+function showShorts(r) {
+  $("shortsPanel").classList.add("open");
+  const ul = $("shResults"); ul.innerHTML = "";
+  for (const s of r?.shorts || []) {
+    const li = document.createElement("li");
+    li.innerHTML = `<div><b></b><br><span class="muted"></span></div><button>Open</button>`;
+    li.querySelector("b").textContent = `${s.title} · ${fmt(s.length)}`;
+    li.querySelector("span").textContent = `${fmt(s.from)}–${fmt(s.to)} of this edit · ${s.cuts} cut${s.cuts === 1 ? "" : "s"}${s.why ? " · " + s.why : ""}`;
+    li.querySelector("button").onclick = async () => {
+      await save(true);
+      const res = await (await fetch("/api/openproject", { method: "POST", body: JSON.stringify({ file: s.file }) })).json();
+      if (res.error) return toast(res.error); location.reload();
+    };
+    ul.appendChild(li);
+  }
+  toast(`${r?.shorts?.length || 0} Short${r?.shorts?.length === 1 ? "" : "s"} made (picked by ${r?.how || "Cutline"}): open one to check it`, 6000);
+}
+$("shGo").onclick = async () => {
+  await save(true); $("shResults").innerHTML = "";
+  const r = await (await fetch("/api/shorts", { method: "POST", body: JSON.stringify({ project: P, count: +$("shCount").value,
+    length: $("shLength").value, claude: $("shClaude").checked }) })).json();
+  if (r.state === "error") return toast(r.error, 6000);
+  $("shortsPanel").classList.remove("open"); watchExport();
+};
+$("shClose").onclick = () => $("shortsPanel").classList.remove("open");
+$("shortsPanel").onclick = (e) => { if (e.target.id === "shortsPanel") $("shortsPanel").classList.remove("open"); };
 
 // ---------- auto captions ----------
 async function refreshCC() {
@@ -2086,15 +2145,16 @@ function watchExport() {
   polling = setInterval(async () => {
     const s = await (await fetch("/api/export")).json();
     $("progress").firstElementChild.style.width = `${Math.round(s.progress * 100)}%`;
-    const doing = { captions: "Listening", model: "Downloading the model" }[s.kind] || "Exporting";
-    $("status").textContent = s.state === "running" ? `${doing} ${Math.round(s.progress * 100)}%` : "";
+    const doing = { captions: "Listening", model: "Downloading the model", shorts: "Making Shorts: listening" }[s.kind] || "Exporting";
+    $("status").textContent = s.state === "running" ? (s.note || `${doing} ${Math.round(s.progress * 100)}%`) : "";
     if (s.state === "running") return;
     clearInterval(polling); $("progress").style.display = "none"; $("exportBtn").textContent = "Export";
     if (s.state === "done" && s.kind === "captions") { makeCaptions(s.result || []); return; }
+    if (s.state === "done" && s.kind === "shorts") { showShorts(s.result); return; }
     if (s.state === "done" && s.kind === "model") { toast("Model ready: captions can be made now"); refreshCC(); return; }
     if (s.state === "done") { $("status").textContent = s.kind === "thumbnail" ? "Thumbnail ✓" : "Exported ✓";
       toast(`Saved ${s.output.split("/").pop()}`, 6000); fetch("/api/reveal", { method: "POST" }); }
-    else if (s.state === "error") toast(`${s.kind === "captions" ? "Captions" : s.kind === "model" ? "Download" : "Export"} failed:\n${s.error}`, 9000);
+    else if (s.state === "error") toast(`${{ captions: "Captions", model: "Download", shorts: "Auto Shorts" }[s.kind] || "Export"} failed:\n${s.error}`, 9000);
   }, 500);
 }
 
