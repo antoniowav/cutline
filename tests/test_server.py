@@ -865,5 +865,48 @@ json.dump({{"transcription": [{{"offsets": {{"from": f, "to": t}}, "text": w}} f
         fast = self.json("/api/follow", {"src": sid, "in": 0, "out": 30, "speed": 2})["keys"]
         self.assertEqual([k["t"] * 2 for k in fast], [k["t"] for k in keys])
 
+    def test_9o_voice_enhance(self):
+        v = self.videos
+        # a "voice" (a 220 Hz tone, 0-1 s and 2-3 s) over steady hiss all the way through
+        ffmpeg("-f", "lavfi", "-i", "anoisesrc=d=3:c=white:a=0.03:r=48000", "-f", "lavfi", "-i",
+               "sine=f=220:d=3:sample_rate=48000", "-filter_complex",
+               "[1]volume=enable='between(t,1,2)':volume=0[s];[0][s]amix=inputs=2:normalize=0", str(v / "noisy.wav"))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=black:s=320x180:r={FPS}:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(v / "dark.mp4"))
+        self.json("/api/new", {"path": str(v / "dark.mp4")})
+        self.json("/api/addsource", {"path": str(v / "noisy.wav")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        base = [{"id": 1, "src": ids["dark.mp4"], "track": 1, "start": 0, "in": 0, "out": 3, "layout": "full", "size": 0.3}]
+        voice = {"id": 2, "src": ids["noisy.wav"], "track": 2, "start": 0, "in": 0, "out": 3, "layout": "full", "size": 0.3}
+
+        def level(out, start, length):
+            stats = subprocess.run(["ffmpeg", "-ss", f"{start}", "-t", f"{length}", "-i", out, "-af", "astats=metadata=0",
+                                    "-f", "null", "-"], capture_output=True, text=True).stderr
+            return float(re.findall(r"RMS level dB: (-?[\d.]+|-inf)", stats)[-1])
+
+        plain = self.export({**project, "clips": base + [voice]})
+        clear = self.export({**project, "clips": base + [{**voice, "voice": "light"}]})
+        for state in (plain, clear):
+            self.assertEqual(state["state"], "done", state["error"])
+        hiss_before, hiss_after = level(plain["output"], 1.3, 0.5), level(clear["output"], 1.3, 0.5)
+        self.assertGreater(hiss_before - hiss_after, 6, f"the hiss drops: {hiss_before} → {hiss_after} dB")
+        self.assertGreater(level(clear["output"], 2.2, 0.6), -30, "the voice stays")
+
+    def test_9p_chapters_from_markers(self):
+        self.json("/api/new", {"path": str(self.videos / "sdr.mp4")})
+        project = self.json("/api/project")["project"]
+        # one old-style marker (just a time) and two named ones
+        project["markers"] = [{"t": 1.5, "name": "Setup"}, 2.5, {"t": 3, "name": "The = result; #1"}]
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_chapters", "-of", "json", state["output"]],
+                             capture_output=True, text=True, check=True).stdout
+        chapters = [(round(float(c["start_time"]), 2), c["tags"]["title"]) for c in json.loads(out)["chapters"]]
+        self.assertEqual(chapters, [(0, "Intro"), (1.5, "Setup"), (2.5, "Chapter 3"), (3, "The = result; #1")])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

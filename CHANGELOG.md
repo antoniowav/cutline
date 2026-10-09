@@ -5,6 +5,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-09
+
+### Added
+- Voice enhance (Voice → Enhance / Enhance+ on any clip with sound): rumble cut, background
+  noise taken down to the clip's own measured noise floor, a gentle gate that lowers the room
+  between words, "s" softened, mud cut, presence lifted and compressed. On a laptop-mic
+  recording the pauses come out 10-14 dB quieter. The preview plays the EQ and compressor;
+  the noise removal is heard in the export.
+- YouTube chapters: name your markers in Export → YouTube chapters and copy the list into
+  the description (00:00 first, YouTube's rules checked). Exports carry the markers as
+  chapters too, for players like mpv and VLC.
+
 ## [0.11.0] - 2026-10-09
 
 ### Removed
@@ -206,7 +218,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/antoniowav/cutline/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/antoniowav/cutline/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/antoniowav/cutline/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/antoniowav/cutline/compare/v0.8.0...v0.9.0

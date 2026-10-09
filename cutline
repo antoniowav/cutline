@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.11.0"
+VERSION = "0.12.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -337,6 +337,36 @@ def clean_trans(trans):
     return {"type": trans["type"], "dur": num(trans.get("dur", 0.5), 0.1, 3)}
 
 
+# Voice enhance: rumble cut, the noise taken down (afftdn, set to the clip's own measured
+# background), a gentle gate that lowers the room between words (opening 10 dB above that
+# background), "s" softened, mud cut and presence lifted, then compressed so it sits evenly.
+# Enhance+ takes more noise out and lowers the pauses further. No leveller: it would lift the
+# pauses again.
+VOICE = {
+    "light": "highpass=f=80,afftdn=nr=12:nf={nf},agate=threshold={gate}:range=0.25:attack=5:release=250:ratio=3,"
+             "deesser=i=0.3,equalizer=f=250:t=q:w=1:g=-2,equalizer=f=3500:t=q:w=1.2:g=2,"
+             "acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2",
+    "strong": "highpass=f=90,afftdn=nr=20:nf={nf},agate=threshold={gate}:range=0.1:attack=5:release=250:ratio=4,"
+              "deesser=i=0.5,equalizer=f=250:t=q:w=1:g=-3,equalizer=f=3500:t=q:w=1.2:g=4,"
+              "acompressor=threshold=-24dB:ratio=4:attack=5:release=120:makeup=3.2",
+}
+
+
+@functools.lru_cache(maxsize=256)
+def noise_floor(path, start, length):
+    """How loud the background is in a stretch of sound, in dB: the quietest tenth of its 50 ms
+    windows, at full bandwidth (hiss lives in the highs). The denoiser is told this, so it takes
+    out the hiss and leaves the voice."""
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{min(length, 600):.3f}", "-i", str(path),
+                          "-vn", "-ac", "1", "-ar", "48000", "-af",
+                          "asetnsamples=n=2400,astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level:file=-",
+                          "-f", "null", "-"], capture_output=True, text=True, timeout=300).stdout
+    levels = [float(v) for v in re.findall(r"RMS_level=(-?[\d.]+)", out)]
+    if not levels:
+        return -50.0
+    return sorted(levels)[len(levels) // 10]
+
+
 def clean_color(color):
     color = color if isinstance(color, dict) else {}
     return {"b": num(color.get("b", 1), 0.3, 2), "c": num(color.get("c", 1), 0.3, 2),
@@ -602,6 +632,38 @@ def atempo(speed):
     return ",".join(parts)
 
 
+def clean_markers(markers):
+    """Markers, oldest kind (a time) or newer (a time and a name), as [{t, name}] in order."""
+    out = []
+    for m in markers if isinstance(markers, list) else []:
+        m = {"t": m} if isinstance(m, (int, float)) else m
+        if isinstance(m, dict):
+            try:
+                out.append({"t": num(m.get("t", 0), 0, 1e6), "name": re.sub(r"\s+", " ", str(m.get("name") or "")).strip()[:100]})
+            except (TypeError, ValueError):
+                continue
+    return sorted(out, key=lambda m: m["t"])[:500]
+
+
+def chapters_file(markers, total, file):
+    """Markers as chapters in ffmpeg's metadata format, for players that show them."""
+    marks = [m for m in markers if m["t"] < total - 0.5]
+    if not marks:
+        return None
+    if marks[0]["t"] < 1:                          # chapters start at the start: a marker in the
+        marks = [{**marks[0], "t": 0.0}, *marks[1:]]   # first second is the first chapter,
+    else:                                          # else an Intro is added
+        marks = [{"t": 0.0, "name": "Intro"}, *marks]
+    esc = lambda s: re.sub(r"([=;#\\\n])", r"\\\1", s)
+    lines = [";FFMETADATA1"]
+    for i, m in enumerate(marks):
+        end = marks[i + 1]["t"] if i + 1 < len(marks) else total
+        lines += ["[CHAPTER]", "TIMEBASE=1/1000", f"START={round(m['t'] * 1000)}", f"END={round(end * 1000)}",
+                  f"title={esc(m['name'] or f'Chapter {i + 1}')}"]
+    file.write_text("\n".join(lines) + "\n")
+    return file
+
+
 def safe_name(name):
     """A project name that is safe as a file name: no slashes, no control characters."""
     return re.sub(r"[^\w .,()'&+-]+", "", str(name)).strip().lstrip(".")[:80]
@@ -702,7 +764,9 @@ def clean_clip(c):
             "color": clean_color(c.get("color")), "lut": str(c.get("lut") or "")[:4096],
             "key": clean_key(c.get("key")),
             # music that gets quieter while someone speaks (ducking)
-            "duck": bool(c.get("duck"))}
+            "duck": bool(c.get("duck")),
+            # a voice made clearer: less noise and hiss, more presence, evened out
+            "voice": c["voice"] if c.get("voice") in VOICE else None}
 
 
 _fonts = None
@@ -760,6 +824,7 @@ def clean_project(p):
             "tracks": [{"id": int(t["id"]), "hidden": bool(t.get("hidden")), "muted": bool(t.get("muted"))}
                        for t in p["tracks"]],
             "clips": [clean_clip(c) for c in p["clips"]],
+            "markers": clean_markers(p.get("markers")),
         }
     except (KeyError, TypeError, ValueError, AttributeError) as e:
         raise ValueError("This project can't be exported: its data is damaged") from e
@@ -1497,8 +1562,14 @@ class App:
             # mono: copy to both sides at full level (a plain upmix would drop it by 3 dB)
             to_stereo = "pan=stereo|c0=c0|c1=c0" if self.sources[c["src"]].info.get("channels") == 1 \
                 else "aformat=channel_layouts=stereo"
-            tempo = atempo(speed)
-            graph.append(f"[{k}:a:0]aresample=48000,{to_stereo},asetpts=PTS-STARTPTS,{tempo + ',' if tempo else ''}"
+            clearer = ""
+            if c.get("voice"):                     # set to the clip's own background
+                floor = noise_floor(str(self.sources[c["src"]].path), round(c["in"], 2), round(c["out"] - c["in"], 2))
+                nf = min(-20.0, max(-80.0, floor + 3))
+                gate = 10 ** (min(-15.0, max(-70.0, floor + 10)) / 20)
+                clearer = VOICE[c["voice"]].replace("{nf}", f"{nf:.1f}").replace("{gate}", f"{gate:.5f}") + ","
+            tempo = atempo(speed) + ("," if atempo(speed) else "") + clearer
+            graph.append(f"[{k}:a:0]aresample=48000,{to_stereo},asetpts=PTS-STARTPTS,{tempo}"
                          f"apad=whole_dur={d:.4f},atrim=duration={d:.4f},"
                          f"volume={gain:.3f},afade=t=in:d={fin:.3f},afade=t=out:st={max(0, d - fout):.4f}:d={fout:.3f},"
                          f"adelay={ms}|{ms}[a{k}]")
@@ -1551,9 +1622,11 @@ class App:
                                           "-t", f"{total:.4f}", str(out)],
                           "length": total, "weight": total / 10})
         else:
-            # Join the pieces and add the sound, copying both as they are.
+            # Join the pieces and add the sound, copying both as they are (and the markers as chapters).
+            meta = chapters_file(project.get("markers") or [], total, work / "chapters.txt")
+            chapters = ["-i", str(meta), "-map_chapters", "2"] if meta else []
             steps.append({"args": head + ["-f", "concat", "-safe", "0", "-i", str(work / "pieces.txt"),
-                                          "-i", str(sound), "-map", "0:v", "-map", "1:a", "-c", "copy",
+                                          "-i", str(sound), *chapters, "-map", "0:v", "-map", "1:a", "-c", "copy",
                                           "-movflags", "+faststart", "-t", f"{total:.4f}", str(out)],
                           "length": total, "weight": total / 50})
         return steps, out, work

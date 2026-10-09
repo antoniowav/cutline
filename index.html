@@ -74,6 +74,14 @@
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
   #silencePanel.open { display:flex; }
   #silencePanel label { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  #chPanel { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:12; align-items:center; justify-content:center; }
+  #chPanel.open { display:flex; }
+  #chPanel .panel { background:var(--bg); border:1px solid var(--accent); width:min(520px, 92vw); padding:14px; display:flex;
+    flex-direction:column; gap:10px; white-space:normal; max-height:86vh; overflow:auto; }
+  #chList { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+  #chList li { display:flex; gap:8px; align-items:center; }
+  #chList li span { width:56px; color:var(--accent); font-variant-numeric:tabular-nums; }
+  #chList input, #chText { flex:1; font:inherit; color:var(--fg); background:var(--bg2); border:1px solid var(--muted); border-radius:4px; padding:3px 6px; }
   #ccPanel { position:fixed; inset:0; background:rgba(0,0,0,.55); display:none; z-index:12; align-items:center; justify-content:center; }
   #ccPanel.open { display:flex; }
   #ccPanel .panel { background:var(--bg); border:1px solid var(--accent); width:min(460px, 92vw); padding:14px; display:flex;
@@ -159,7 +167,8 @@
   <button id="drawerBtn" title="GIFs, stickers and sound effects: find them in your browser, they show up here">GIFs &amp; SFX</button>
   <select id="quality" title="Export size: smaller exports much faster"><option value="orig">Original</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option>
     <option value="small" title="720p, a smaller file">Small file</option><option value="gif" title="480p, 15 fps, no sound">GIF</option>
-    <option value="thumb" title="The frame at the playhead, titles and all, as a PNG (1280 wide)">Thumbnail</option></select>
+    <option value="thumb" title="The frame at the playhead, titles and all, as a PNG (1280 wide)">Thumbnail</option>
+    <option value="chapters" title="The markers as YouTube chapters, to paste in the description">YouTube chapters</option></select>
   <label class="muted" title="Make the export as loud as YouTube, TikTok and Spotify play it (-14 LUFS), so it's not too quiet or too loud"><input id="loud" type="checkbox"> Loudness</label>
   <button class="primary" id="exportBtn">Export</button>
 </header>
@@ -266,6 +275,8 @@
   <label class="muted" id="volTools" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
   <span id="soundTools" style="display:none">
     <label class="muted" id="duckLabel" title="Music gets about 12 dB quieter while someone speaks, and comes back in the pauses"><input id="duck" type="checkbox"> Duck under voice</label>
+    <label class="muted" title="Clearer speech: less background noise and hiss, more presence, evened out. Noise removal is heard in the export.">Voice
+      <select id="voiceSel"><option value="">Off</option><option value="light">Enhance</option><option value="strong">Enhance+</option></select></label>
     <button id="silenceBtn" title="Find the pauses in the selected clips and cut them out">✂ Silences</button>
     <span id="silencePanel">
       <label class="muted" title="Quieter than this counts as a pause">Quieter than <span><input id="sLevel" type="range" min="-60" max="-20" step="1" value="-38"> <span id="sLevelVal">-38 dB</span></span></label>
@@ -313,6 +324,15 @@
     <option value="es">Spanish</option><option value="fr">French</option><option value="de">German</option><option value="pt">Portuguese</option>
     <option value="nl">Dutch</option></select></label>
   <span class="row" style="display:flex; gap:8px; justify-content:flex-end"><button id="ccClose">Close</button><button id="ccGo" class="primary">Make captions</button></span>
+</div></div>
+<div id="chPanel"><div class="panel">
+  <b>YouTube chapters</b>
+  <span class="muted">Each marker (M) starts a chapter: name them here. Paste the list into the video's description;
+    exports also carry them as chapters for players like mpv and VLC.</span>
+  <ul id="chList"></ul>
+  <span id="chWarn" class="muted"></span>
+  <textarea id="chText" rows="6" readonly spellcheck="false"></textarea>
+  <span style="display:flex; gap:8px; justify-content:flex-end"><button id="chClose">Close</button><button id="chCopy" class="primary">Copy</button></span>
 </div></div>
 <div id="dropHint">Drop to add at the playhead</div>
 <div id="toast"></div>
@@ -426,9 +446,26 @@ function save(now) {
 // ---------- preview: one <video> per track, stacked in track order ----------
 // Audio goes through a Web Audio gain per track, because <video>.volume stops at 100%.
 let actx = null; const gains = {};
+// Each track's sound: source → voice enhance (high-pass, mud cut, presence, compressor; flat when
+// off) → gain. The noise removal is the export's only (Web Audio has none to match it).
+const voiceFx = {};
 function wire(id) {
   if (!actx || gains[id]) return;
-  const g = actx.createGain(); actx.createMediaElementSource(vids[id]).connect(g).connect(actx.destination); gains[id] = g;
+  const hp = actx.createBiquadFilter(); hp.type = "highpass"; hp.frequency.value = 10;
+  const mud = actx.createBiquadFilter(); mud.type = "peaking"; mud.frequency.value = 250; mud.Q.value = 1; mud.gain.value = 0;
+  const air = actx.createBiquadFilter(); air.type = "peaking"; air.frequency.value = 3500; air.Q.value = 1.2; air.gain.value = 0;
+  const comp = actx.createDynamicsCompressor(); comp.threshold.value = 0; comp.ratio.value = 1;
+  const g = actx.createGain();
+  actx.createMediaElementSource(vids[id]).connect(hp).connect(mud).connect(air).connect(comp).connect(g).connect(actx.destination);
+  gains[id] = g; voiceFx[id] = { hp, mud, air, comp, on: null };
+}
+const VOICE_FX = { light: { hp: 80, mud: -2, air: 2, th: -20, ratio: 2.5, makeup: 2 },
+                   strong: { hp: 90, mud: -3, air: 4, th: -24, ratio: 4, makeup: 3.2 } };
+function setVoiceFx(id, kind) {
+  const fx = voiceFx[id]; if (!fx || fx.on === kind) return;
+  const v = VOICE_FX[kind] || { hp: 10, mud: 0, air: 0, th: 0, ratio: 1, makeup: 1 };
+  fx.hp.frequency.value = v.hp; fx.mud.gain.value = v.mud; fx.air.gain.value = v.air;
+  fx.comp.threshold.value = v.th; fx.comp.ratio.value = v.ratio; fx.makeup = v.makeup; fx.on = kind;
 }
 function ensureAudio() {
   if (!actx) { actx = new AudioContext(); for (const id of Object.keys(vids)) wire(id); }
@@ -451,7 +488,8 @@ function applyGains() {
   for (const tr of P.tracks) {
     const g = gains[tr.id]; if (!g) continue;
     const c = clipAt(tr.id, t);
-    g.gain.value = tr.muted || !c ? 0 : vol(c) * fadeAt(c, t) * (c.duck ? duckLevel : 1);
+    setVoiceFx(tr.id, c?.voice || null);
+    g.gain.value = tr.muted || !c ? 0 : vol(c) * fadeAt(c, t) * (c.duck ? duckLevel : 1) * (voiceFx[tr.id]?.makeup || 1);
   }
 }
 function buildVideos() {
@@ -841,14 +879,14 @@ function detachAudio() {
 }
 // Markers: M drops one at the playhead (or takes away the one there); clips snap to them.
 function toggleMarker() {
-  const near = (P.markers || []).findIndex(m => Math.abs(m - t) < frame() * 1.5);
+  const near = (P.markers || []).findIndex(m => Math.abs(m.t - t) < frame() * 1.5);
   change(() => {
     P.markers = P.markers || [];
-    if (near >= 0) P.markers.splice(near, 1); else P.markers = [...P.markers, t].sort((a, b) => a - b);
+    if (near >= 0) P.markers.splice(near, 1); else P.markers = [...P.markers, { t, name: "" }].sort((a, b) => a.t - b.t);
   });
 }
 function jumpMarker(dir) {
-  const ms = (P.markers || []).filter(m => dir > 0 ? m > t + 1e-3 : m < t - 1e-3);
+  const ms = (P.markers || []).map(m => m.t).filter(m => dir > 0 ? m > t + 1e-3 : m < t - 1e-3);
   if (!ms.length) return toast(P.markers?.length ? "No more markers that way" : "No markers yet: press M to add one");
   pause(); seek(dir > 0 ? Math.min(...ms) : Math.max(...ms)); follow();
 }
@@ -920,6 +958,7 @@ function showInspector() {
   const sounding = P.clips.filter(c => selected.has(c.id) && !isText(c) && S[c.src]?.audio);
   $("soundTools").style.display = sounding.length ? "flex" : "none";
   if (!sounding.length) $("silencePanel").classList.remove("open");
+  if (sounding.length) $("voiceSel").value = sounding[0].voice || "";
   $("duckLabel").style.display = one && isAudio(one) ? "" : "none"; if (one) $("duck").checked = !!one.duck;
   const vids_ = selVideos(); $("colourBtn").disabled = !vids_.length;
   if (!vids_.length) $("colourPanel").classList.remove("open"); else showColour(vids_[0]);
@@ -1284,9 +1323,52 @@ $("tplSel").onchange = () => {
   else addTemplate($("tplSel").value);
   $("tplSel").value = ""; };
 
+// ---------- YouTube chapters, from the markers ----------
+// YouTube wants the first at 0:00, at least three, each at least 10 s: Cutline adds the 0:00
+// one when it's missing and says when the rest doesn't hold.
+const stamp = x => { x = Math.round(x); const h = Math.floor(x / 3600), m = Math.floor(x / 60) % 60, s = x % 60;
+  return (h ? `${h}:${String(m).padStart(2, "0")}` : String(m).padStart(2, "0")) + `:${String(s).padStart(2, "0")}`; };
+function chapterList() {
+  const marks = (P.markers || []).filter(m => m.t < total() - 0.5);
+  if (!marks.length) return marks;
+  // the first chapter starts at 0:00: a marker in the first second is it, else an Intro is added
+  return marks[0].t < 1 ? [{ ...marks[0], at: 0 }, ...marks.slice(1)] : [{ t: 0, name: "Intro", auto: true }, ...marks];
+}
+function showChapterText() {
+  const ch = chapterList();
+  const at = m => m.at ?? m.t;
+  $("chText").value = ch.map((m, i) => `${stamp(at(m))} ${m.name || `Chapter ${i + 1}`}`).join("\n");
+  const short = ch.some((m, i) => (ch[i + 1] ? at(ch[i + 1]) : total()) - at(m) < 10);
+  $("chWarn").textContent = !ch.length ? "No markers yet: press M at each new part, then name them here."
+    : ch.length < 3 ? "YouTube shows chapters only when there are at least three." : short ? "YouTube wants each chapter to be at least 10 seconds long." : "";
+}
+function openChapters() {
+  const ul = $("chList"); ul.innerHTML = "";
+  chapterList().forEach(m => {
+    const li = document.createElement("li"); li.innerHTML = `<span></span><input maxlength="100" spellcheck="false">`;
+    li.firstChild.textContent = stamp(m.at ?? m.t);
+    const inp = li.lastChild; inp.value = m.name || "";
+    const real = (P.markers || []).find(x => x.t === m.t);                  // write names to the marker itself inp.placeholder = m.auto ? "Intro (added: chapters start at 0:00)" : "Name this chapter";
+    if (m.auto) inp.disabled = true;
+    inp.oninput = () => { if (!real) return; sliderStart(); real.name = inp.value.replace(/\s+/g, " ").slice(0, 100); showChapterText(); draw(); };
+    inp.onchange = sliderEnd; inp.onkeydown = (e) => e.stopPropagation();
+    ul.appendChild(li);
+  });
+  showChapterText(); $("chPanel").classList.add("open");
+}
+$("chClose").onclick = () => $("chPanel").classList.remove("open");
+$("chPanel").onclick = (e) => { if (e.target.id === "chPanel") $("chPanel").classList.remove("open"); };
+$("chCopy").onclick = async () => {
+  try { await navigator.clipboard.writeText($("chText").value); toast("Chapters copied: paste them into the description"); }
+  catch { $("chText").select(); toast("Select the text and copy it (Ctrl+C)"); }
+};
+
 // ---------- sound: ducking and the silence cutter ----------
 $("duck").onchange = () => { const cs = P.clips.filter(c => selected.has(c.id) && isAudio(c));
   change(() => { for (const c of cs) { if ($("duck").checked) c.duck = true; else delete c.duck; } }); };
+$("voiceSel").onchange = () => { const cs = P.clips.filter(c => selected.has(c.id) && !isText(c) && S[c.src]?.audio);
+  change(() => { for (const c of cs) { if ($("voiceSel").value) c.voice = $("voiceSel").value; else delete c.voice; } });
+  applyGains(); };
 $("silenceBtn").onclick = (e) => { e.stopPropagation(); $("silencePanel").classList.toggle("open"); };
 $("silencePanel").onclick = (e) => e.stopPropagation();
 document.addEventListener("click", () => $("silencePanel").classList.remove("open"));
@@ -1620,9 +1702,10 @@ function render() {
     ctx.fillText(step < 1 ? fmt(s) : fmt(s).slice(0, 5), x + 3, 14);
   }
   for (const m of P.markers || []) {
-    const mx = Math.round(X(m)) + 0.5; if (mx < HEAD || mx > W) continue;
+    const mx = Math.round(X(m.t)) + 0.5; if (mx < HEAD || mx > W) continue;
     ctx.fillStyle = colors.yellow || colors.accent;
     ctx.beginPath(); ctx.moveTo(mx - 5, 2); ctx.lineTo(mx + 5, 2); ctx.lineTo(mx + 5, 10); ctx.lineTo(mx, 15); ctx.lineTo(mx - 5, 10); ctx.fill();
+    if (m.name) { ctx.font = `11px ${colors.font}`; ctx.fillText(m.name, mx + 8, 11); }
     ctx.strokeStyle = colors.yellow || colors.accent; ctx.globalAlpha = 0.35; ctx.setLineDash([2, 4]);
     ctx.beginPath(); ctx.moveTo(mx, RULER); ctx.lineTo(mx, H); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
   }
@@ -1810,7 +1893,7 @@ canvas.addEventListener("mousedown", e => {
   pause(); seek(T(x)); showInspector(); draw();
 });
 function snapPoints(ignore) {
-  const pts = [0, t, ...(P.markers || [])];
+  const pts = [0, t, ...(P.markers || []).map(m => m.t)];
   for (const c of P.clips) if (!ignore.has(c.id)) pts.push(c.start, end(c));
   return pts;
 }
@@ -2083,6 +2166,7 @@ let polling = null;
 $("exportBtn").onclick = async () => {
   const cur = await (await fetch("/api/export")).json();
   if (cur.state === "running") { if (confirm("Cancel the export?")) fetch("/api/export/cancel", { method: "POST" }); return; }
+  if ($("quality").value === "chapters") { openChapters(); return; }
   if ($("quality").value === "gif" && total() > 60 && !confirm(`A ${Math.round(total())} s GIF will be a very big file. Export it anyway?`)) return;
   await save(true);
   const thumb = $("quality").value === "thumb";
@@ -2168,7 +2252,8 @@ document.addEventListener("visibilitychange", () => {
 window.addEventListener("pagehide", () => navigator.sendBeacon("/api/bye"));
 async function init() {
   const d = await (await fetch("/api/project")).json();
-  P = d.project; applyTheme(d.theme); textFont = d.textFont || textFont;
+  P = d.project; applyTheme(d.theme);
+  P.markers = (P.markers || []).map(m => typeof m === "number" ? { t: m, name: "" } : m);   // older projects: just times textFont = d.textFont || textFont;
   $("tfont").innerHTML = `<option value="">Default (${textFont})</option>`;
   for (const f of d.fonts || []) { const o = document.createElement("option"); o.value = o.textContent = f; o.style.fontFamily = `"${f}"`; $("tfont").appendChild(o); }
   $("name").textContent = P.name; document.title = `${P.name} — Cutline`;

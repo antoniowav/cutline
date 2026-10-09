@@ -25,7 +25,8 @@ original files.
 - **Selection**: click, Shift-click, box-select by dragging over empty space, or select a **gap** and delete it to close it.
 - **Per-clip volume**, 0–200 %, with the waveform following along.
 - **Copy and paste**: Ctrl+C / Ctrl+X / Ctrl+V anything selected, even into another project; **Alt**-drag drops a copy.
-- **Markers**: **M** at the playhead, **[** / **]** to jump; clips snap to them.
+- **Markers and chapters**: **M** at the playhead, **[** / **]** to jump, clips snap to them; name them and copy them as YouTube chapters (exports carry them as chapters too).
+- **Voice enhance**: less background noise, a quieter room between words, clearer and more even speech, per clip.
 - **Detach audio** onto its own clip, and **crop** or **turn** any clip's picture.
 - **Speed, zoom and keyframes**: 0.25–4x with the pitch kept, punch-ins (**Z**), Ken Burns, and keyframed zoom, focus and position.
 - **Follow the action**: zooms that follow the cursor, typing and windows in a screen recording, made in one click.
