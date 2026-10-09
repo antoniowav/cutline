@@ -28,10 +28,11 @@ original files.
 - **Markers**: **M** at the playhead, **[** / **]** to jump; clips snap to them.
 - **Detach audio** onto its own clip, and **crop** or **turn** any clip's picture.
 - **Speed, zoom and keyframes**: 0.25–4x with the pitch kept, punch-ins (**Z**), Ken Burns, and keyframed zoom, focus and position.
+- **Follow the action**: zooms that follow the cursor, typing and windows in a screen recording, made in one click.
 - **Transitions**: crossfade, dip to black, slide, wipe, circle and zoom, with the sound crossfading along.
 - **Silence cutter, ducking and auto captions**: cut the pauses out in one go, duck music under speech, and caption with whisper.cpp, on this computer (optional: `whisper-cpp`).
 - **Thumbnails**: the frame at the playhead, titles and all, as a PNG.
-- **Auto Shorts**: the best moments of an edit picked (by Claude Code, or by Cutline), the pauses cut, made 9:16 with the crop on the speaker, captioned and titled, as new projects to check.
+- **Auto Shorts**: the best moments of an edit picked (by Claude Code, or by Cutline), the pauses cut, made 9:16 with the crop on the speaker (or, for a screen recording, the whole screen following the action), captioned and titled, as new projects to check.
 - **Colour**: brightness, contrast, saturation, warmth and looks for many clips at once, **.cube LUTs** (from ~/Videos/LUTs or Downloads), and **green screen** with an eyedropper.
 - **Any shape**: 16:9, 9:16 for Shorts/TikTok/Reels, 1:1 or 4:5; **Fill** a tall frame with a wide video, or fill the bars with a **blurred** copy of it.
 - **Export presets**: sizes from 720p up, a small file, a GIF, and **loudness** normalised to -14 LUFS.

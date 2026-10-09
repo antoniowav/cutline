@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -572,6 +572,10 @@ def face_x(path, start, length, width, height):
         return None
     if not FACE_MODEL.is_file() or not hasattr(cv2, "FaceDetectorYN"):
         return None
+    try:
+        cv2.setLogLevel(2)                         # errors only: no notes about its graph engine
+    except AttributeError:
+        pass
     w = 320
     h = max(2, round(w * height / max(1, width) / 2) * 2)
     out = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(path),
@@ -582,10 +586,145 @@ def face_x(path, start, length, width, height):
     for i in range(n):
         img = np.frombuffer(out, np.uint8, w * h * 3, i * w * h * 3).reshape(h, w, 3)
         _, faces = detector.detect(img)
-        if faces is not None and len(faces):
+        # a speaker on camera fills a good part of the frame; a webcam bubble on a screen
+        # recording doesn't, and isn't who to crop to
+        faces = [f for f in faces if f[2] >= 0.1 * w] if faces is not None else []
+        if len(faces):
             x, _, fw = max(faces, key=lambda f: f[2] * f[3])[:3]
             xs.append(float(x + fw / 2) / w)
     return sorted(xs)[len(xs) // 2] if xs and len(xs) >= max(1, n // 4) else None
+
+
+def spread(hist, total):
+    """The middle and the 10-90 % width of what a histogram counts, as shares of its length."""
+    seen, lo, mid, hi = 0, None, None, None
+    for k, v in enumerate(hist):
+        seen += v
+        if lo is None and seen >= total * 0.1:
+            lo = k
+        if mid is None and seen >= total * 0.5:
+            mid = k
+        if hi is None and seen >= total * 0.9:
+            hi = k
+    return (mid + 0.5) / len(hist), (hi - lo + 1) / len(hist)
+
+
+def activity(path, start, length, width, height, rate=4):
+    """Where a video changes, a few times a second: for each pair of frames in a row, how much of
+    the picture changed and where (the middle and the spread of the changed pixels, as shares of
+    the width and height). Screen recordings change where the work happens: the cursor, typing,
+    a window opening. A spot that keeps moving in the same place over minutes (a webcam bubble,
+    a clock, a video playing in a corner) is left out: it isn't the action. To tell, a minute
+    either side is watched too. Plain ffmpeg and Python, on a 160 px wide grey copy, counted in
+    a 32 x 18 grid."""
+    w, cols, rows = 160, 32, 18
+    h = max(rows, round(w * height / max(1, width) / 2) * 2)
+    before = min(60.0, start)
+    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start - before:.3f}", "-t", f"{before + length + 60:.3f}",
+                          "-i", str(path),
+                          "-vf", f"fps={rate},scale={w}:{h},format=gray", "-f", "rawvideo", "-"],
+                         capture_output=True, timeout=600).stdout
+    size = w * h
+    frames = [out[i:i + size] for i in range(0, len(out) - size + 1, size)]
+    cell = [(i % w) * cols // w + ((i // w) * rows // h) * cols for i in range(size)]
+    grids = []
+    for n in range(1, len(frames)):
+        a, b, g = frames[n - 1], frames[n], [0] * (cols * rows)
+        for i in range(size):
+            if abs(a[i] - b[i]) > 24:              # more than compression noise
+                g[cell[i]] += 1
+        grids.append(g)
+    share = [sum(1 for g in grids if g[k] > 2) / max(1, len(grids)) for k in range(cols * rows)]
+    moving = sorted(s for s in share if s > 0)
+    typical = moving[len(moving) // 2] if moving else 0
+    always = {k for k, s in enumerate(share) if s >= 0.08 and s >= 4 * typical}
+    # mask the whole box round each such spot, one cell wider: all of the webcam bubble, not
+    # only the cells where the face moved most
+    seen = set()
+    for k in sorted(always):
+        if k in seen:
+            continue
+        group, todo = set(), [k]
+        while todo:
+            c = todo.pop()
+            if c in group or c not in always:
+                continue
+            group.add(c)
+            todo += [c - cols, c + cols] + ([c - 1] if c % cols else []) + ([c + 1] if c % cols < cols - 1 else [])
+        seen |= group
+        c0, c1 = min(c % cols for c in group) - 1, max(c % cols for c in group) + 1
+        r0, r1 = min(c // cols for c in group) - 1, max(c // cols for c in group) + 1
+        always |= {r * cols + c for r in range(max(0, r0), min(rows, r1 + 1)) for c in range(max(0, c0), min(cols, c1 + 1))}
+    found, skip = [], round(before * rate)
+    for n, g in enumerate(grids[skip:skip + round(length * rate)], 1):
+        g = [0 if k in always else v for k, v in enumerate(g)]
+        changed = sum(g)
+        if changed < 3:
+            found.append({"t": start + n / rate, "amount": 0.0})
+            continue
+        xs = [sum(g[r * cols + c] for r in range(rows)) for c in range(cols)]
+        ys = [sum(g[r * cols:(r + 1) * cols]) for r in range(rows)]
+        cx, sx = spread(xs, changed)
+        cy, sy = spread(ys, changed)
+        found.append({"t": start + n / rate, "amount": changed / size, "x": cx, "y": cy, "sx": sx, "sy": sy})
+    return found
+
+
+def follow_keys(samples, length, t0=0.0):
+    """Keyframes that follow the action: zoom in (1.5-2.2x) towards where things happen in one
+    place, ease out to the whole picture when everything changes at once or nothing has moved
+    for a while. Each move takes 0.5 s and holds at least 1.5 s, so it never jitters."""
+    wide = {"zoom": 1.0, "x": 0.5, "y": 0.5}
+    samples = [{**s, "t": s["t"] - t0} for s in samples if t0 <= s["t"] < t0 + length]   # this stretch only
+    targets = []
+    second = 0.0
+    while second < length:
+        win = [s for s in samples if second <= s["t"] < second + 1 and s["amount"] > 0]
+        if not win:
+            targets.append((second, None))         # quiet: no reason to move
+        else:
+            weight = sum(s["amount"] for s in win)
+            cx = sum(s["x"] * s["amount"] for s in win) / weight
+            cy = sum(s["y"] * s["amount"] for s in win) / weight
+            sx = max(s["sx"] for s in win)
+            sy = max(s["sy"] for s in win)
+            if max(sx, sy) > 0.5 or weight / len(win) > 0.25:
+                targets.append((second, wide))     # the whole screen changes: show all of it
+            else:
+                z = min(2.2, max(1.5, 0.75 / max(sx, sy, 0.05)))
+                targets.append((second, {"zoom": round(z, 2), "x": cx, "y": cy}))
+        second += 1.0
+
+    def focus(view):
+        """The view's middle (a share of the picture) as a zoom focus: where the window sits."""
+        z = view["zoom"]
+        if z <= 1.001:
+            return 0.5, 0.5
+        half = 0.5 / z
+        fx = (min(max(view["x"], half), 1 - half) - half) / (1 - 1 / z)
+        fy = (min(max(view["y"], half), 1 - half) - half) / (1 - 1 / z)
+        return round(fx, 4), round(fy, 4)
+
+    def key(at, view):
+        fx, fy = focus(view)
+        return {"t": round(at, 3), "zoom": view["zoom"], "fx": fx, "fy": fy, "x": 0, "y": 0}
+
+    keys, now, since, quiet = [key(0, wide)], wide, -9.0, 0.0
+    for at, want in targets:
+        quiet = quiet + 1 if want is None else 0
+        if want is None and quiet >= 3 and now["zoom"] > 1:
+            want = wide                            # nothing for 3 s: back out
+        if want is None or at - since < 1.5:
+            continue
+        moved = abs(want["zoom"] - now["zoom"]) > 0.2 or abs(want["x"] - now["x"]) > 0.15 \
+            or abs(want["y"] - now["y"]) > 0.15
+        if not moved:
+            continue
+        if at > 0:
+            keys.append(key(at, now))
+        keys.append(key(min(length, at + 0.5), want))
+        now, since = want, at
+    return keys if len(keys) > 1 else []
 
 
 def tall_crop(width, height, fx):
@@ -1143,7 +1282,7 @@ class App:
         # each span, cut at the clips' edges, becomes clips on the new timeline
         H = 1920 if min(clean["canvas"]["w"], clean["canvas"]["h"]) >= 1080 else 1280
         W, fps = H * 9 // 16, clean["canvas"]["fps"]
-        new_clips, at, faces, mapping = [], 0.0, {}, []
+        new_clips, at, faces, mapping, watched, screen_mode = [], 0.0, {}, [], {}, False
         for a, b in spans:
             edges = sorted({a, b, *(x for c in visible for x in (c["start"], end(c)) if a < x < b)})
             for s, e in zip(edges, edges[1:], strict=False):
@@ -1170,9 +1309,24 @@ class App:
                         if c["rotate"] == 0 and key not in faces:
                             faces[key] = face_x(self.sources[c["src"]].path, src_in, (e - s) * speed(c),
                                                 info["width"], info["height"])
-                        fx = faces.get(key) if faces.get(key) is not None else 0.5
-                        clip.update(track=1, layout="full", fit="fill", crop=tall_crop(info["width"], info["height"], fx),
-                                    color=c["color"], lut=c["lut"], rotate=c["rotate"])
+                        clip.update(track=1, layout="full", color=c["color"], lut=c["lut"], rotate=c["rotate"])
+                        if faces.get(key) is not None or info["width"] <= info["height"]:
+                            # a speaker (or a tall video): fill the frame, the crop on the face
+                            fx = faces.get(key) if faces.get(key) is not None else 0.5
+                            clip.update(fit="fill", crop=tall_crop(info["width"], info["height"], fx))
+                        else:
+                            # no face, wide: a screen recording, most likely. Show all of it across the
+                            # frame on blurred bars, and zoom in where the action is.
+                            if c["id"] not in watched:     # the whole moment of this clip, once
+                                a0 = c["in"] + (max(pick["start"], c["start"]) - c["start"]) * speed(c)
+                                a1 = c["in"] + (min(pick["end"], end(c)) - c["start"]) * speed(c)
+                                watched[c["id"]] = activity(self.sources[c["src"]].path, a0, a1 - a0,
+                                                            info["width"], info["height"])
+                            keys = follow_keys(watched[c["id"]], (e - s) * speed(c), src_in)
+                            clip.update(fit="fit", bars="blur")
+                            screen_mode = True
+                            if keys:
+                                clip["keys"] = [{**k, "t": round(k["t"] / speed(c), 3)} for k in keys]
                     else:                          # other sound keeps a track of its own
                         clip.update(track=10 + order.index(c["track"]), layout="full", audioOnly=True)
                     new_clips.append(clip)
@@ -1196,8 +1350,10 @@ class App:
                 t1 = min(t1 if caps[i + 1]["t0"] - t1 >= 0.4 else caps[i + 1]["t0"], caps[i + 1]["t0"])
             if t1 - w["t0"] > 0.04:
                 word, size = fit_text(w["w"], 0.055, W / H, per_line=40)
+                # on a speaker, over the lower part of the picture; under a screen, below it
                 new_clips.append({"id": len(new_clips) + 1, "kind": "text", "src": "", "track": 3, "start": round(w["t0"], 4),
-                                  "in": 0, "out": round(t1 - w["t0"], 4), "text": word, "x": 0.5, "y": 0.66, "tsize": size,
+                                  "in": 0, "out": round(t1 - w["t0"], 4), "text": word, "x": 0.5,
+                                  "y": 0.76 if screen_mode else 0.66, "tsize": size,
                                   **look, "animIn": "pop", "fadeIn": 0.12, "animOut": "none"})
         title, size = fit_text(pick["title"], 0.05, W / H)
         new_clips.append({"id": len(new_clips) + 1, "kind": "text", "src": "", "track": 4, "start": 0, "in": 0,
@@ -2212,6 +2368,17 @@ def handler_for(app: App):
                 if self.path == "/api/model/download":
                     app.start_model_download()
                     return self.send_json(app.export)
+                if self.path == "/api/follow":
+                    src = app.sources.get(str(body.get("src", "")))
+                    if not src or not src.info["video"]:
+                        return self.send_json({"error": "Follow the action works on a video"}, 400)
+                    start, end = num(body.get("in", 0), 0, 1e6), num(body.get("out", 0), 0, 1e6)
+                    speed = num(body.get("speed", 1), 0.25, 4)
+                    if end - start < 1:
+                        return self.send_json({"keys": []})
+                    keys = follow_keys(activity(src.path, start, end - start, src.info["width"], src.info["height"]),
+                                       end - start, start)
+                    return self.send_json({"keys": [{**k, "t": round(k["t"] / speed, 3)} for k in keys]})
                 if self.path == "/api/silences":
                     src = app.sources.get(str(body.get("src", "")))
                     if not src or not src.info["audio"]:

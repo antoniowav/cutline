@@ -5,6 +5,22 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-09
+
+### Added
+- Follow the action (Motion ▾): Cutline watches where the picture changes (the cursor, typing,
+  a window opening), zooms in there and back out when the whole screen changes or nothing
+  happens for a while. Each move eases in and holds, so it never jitters, and it all lands
+  as keyframes to adjust. A spot that keeps moving in the same place for minutes (a webcam
+  bubble, a clock) is ignored. Made for screen recordings.
+- Auto Shorts on screen recordings: when there's no speaker on camera, the whole screen is
+  shown across the tall frame on blurred bars, following the action, with the captions
+  below it.
+
+### Changed
+- Auto Shorts only follow a face that fills a good part of the frame, not a small webcam
+  bubble on a screen recording.
+
 ## [0.9.0] - 2026-10-08
 
 ### Added
@@ -179,7 +195,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/antoniowav/cutline/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/antoniowav/cutline/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/antoniowav/cutline/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/antoniowav/cutline/compare/v0.6.0...v0.7.0

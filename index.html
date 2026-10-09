@@ -224,6 +224,7 @@
         <button id="unkeyBtn" title="Take away the keyframe at the playhead">Remove key</button>
         <button id="kenBtn" title="A slow zoom in across the whole clip">Ken Burns</button>
         <button id="nokeysBtn" title="Take away all keyframes">No keys</button></span>
+      <span class="row"><button id="followBtn" title="Zoom in where things happen (the cursor, typing, a window opening) and back out when the whole screen changes: made for screen recordings">Follow the action</button></span>
       <span class="muted" id="keyInfo"></span>
     </span></span>
   <label class="muted" title="0.25x to 4x; the sound keeps its pitch">Speed <select id="speed" disabled>
@@ -1555,6 +1556,15 @@ $("kenBtn").onclick = () => { const c = selVid(); if (!c) return;
   change(() => { const h = heldValues(c);
     c.keys = [{ t: 0, ...h, zoom: 1, fx: 0.5, fy: 0.5 }, { t: len(c), ...h, zoom: 1.25, fx: 0.6, fy: 0.4 }]; });
   toast("Ken Burns: a slow zoom across the clip. Move the playhead and change Zoom or Focus to adjust"); };
+$("followBtn").onclick = async () => { const c = selVid(); if (!c) return;
+  toast("Watching where the action is…", 60000);
+  const r = await (await fetch("/api/follow", { method: "POST", body: JSON.stringify({ src: c.src, in: c.in, out: c.out, speed: spd(c) }) })).json();
+  if (r.error) return toast(r.error);
+  if (!r.keys.length) return toast("Nothing moves in one place long enough to zoom in on");
+  change(() => { c.keys = r.keys; });
+  const zooms = r.keys.filter((k, i) => k.zoom > 1.01 && (i === 0 || r.keys[i - 1].zoom <= 1.01)).length;
+  toast(`${zooms} zoom${zooms === 1 ? "" : "s"} in where the action is: the diamonds on the clip are the keyframes, change any of them`, 5000);
+};
 $("nokeysBtn").onclick = () => { const c = selVid(); if (!c?.keys) return;
   change(() => { const v = valueAt(c, t - c.start); delete c.keys; Object.assign(c, { zoom: v.zoom, fx: v.fx, fy: v.fy });
     if (c.box) c.box = { ...c.box, x: v.x, y: v.y }; }); };

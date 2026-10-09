@@ -894,9 +894,9 @@ print(json.dumps({{"type": "result", "is_error": False, "structured_output": {{"
         self.assertEqual(short["cuts"], 2, "the 1 s pause before 12 s is cut out")
         # 2.0-11.595 (to 0.12 s after the last word) and 12.9-24.475 (from 0.1 s before the next)
         self.assertAlmostEqual(short["length"], 9.595 + 11.575, delta=0.05)
-        crop = pictures[0]["crop"]
-        self.assertAlmostEqual(1 - crop["l"] - crop["r"], (9 / 16) / (16 / 9), places=3)
-        self.assertEqual(pictures[0]["fit"], "fill")
+        # no face (no OpenCV here) in a wide video: screen mode, all of it shown on blurred bars
+        self.assertEqual((pictures[0]["fit"], pictures[0]["bars"]), ("fit", "blur"))
+        self.assertNotIn("crop", pictures[0])
         captions = [c for c in made["clips"] if c.get("kind") == "text" and c["track"] == 3]
         title = [c for c in made["clips"] if c.get("kind") == "text" and c["track"] == 4]
         self.assertEqual(len(captions), 11 * 4, "one caption per word")
@@ -916,6 +916,36 @@ print(json.dumps({{"type": "result", "is_error": False, "structured_output": {{"
         result = run(count=1, length="short", claude=False)
         self.assertEqual(result["how"], "built-in")
         self.assertEqual(result["shorts"][0]["from"], 0.0, "the question makes the best hook")
+
+    def test_9n_follow_the_action(self):
+        v = self.videos
+        # A quiet screen: a little box jumping about top left (2-9 s), the whole screen flashing
+        # (12-14 s), a box jumping about bottom right (18-25 s), and a "webcam" that never stops
+        # moving in the top right corner, which must be ignored.
+        ffmpeg("-f", "lavfi", "-i", f"color=c=0x303030:s=1280x720:r={FPS}:d=30", "-f", "lavfi", "-i",
+               f"color=c=white:s=60x30:r={FPS}:d=30", "-f", "lavfi", "-i", f"testsrc2=s=200x150:r={FPS}:d=30",
+               "-filter_complex",
+               "[0][2]overlay=x=1060:y=20[w];"
+               "[w][1]overlay=x='100+40*mod(floor(t*4),6)':y=80:enable='between(t,2,9)'[a];"
+               "[a][1]overlay=x='1000+30*mod(floor(t*4),5)':y=600:enable='between(t,18,25)'[b];"
+               "[b]drawbox=x=0:y=0:w=1280:h=720:color=white@0.8:t=fill:enable='lt(mod(t,0.5),0.25)*between(t,12,14)'",
+               "-c:v", "libx264", "-pix_fmt", "yuv420p", str(v / "screen.mp4"))
+        self.json("/api/new", {"path": str(v / "screen.mp4")})
+        sid = next(sid for sid, s in self.json("/api/project")["sources"].items() if s["name"] == "screen.mp4")
+        keys = self.json("/api/follow", {"src": sid, "in": 0, "out": 30, "speed": 1})["keys"]
+        at = lambda t: max((k for k in keys if k["t"] <= t), key=lambda k: k["t"])
+        self.assertEqual(at(1)["zoom"], 1, "wide while nothing happens")
+        self.assertGreater(at(5)["zoom"], 1.4, f"zoomed in on the top left box: {keys}")
+        self.assertLess(at(5)["fx"], 0.3)
+        self.assertLess(at(5)["fy"], 0.3)
+        self.assertEqual(at(13)["zoom"], 1, "out while the whole screen changes")
+        self.assertGreater(at(22)["zoom"], 1.4, "in again, bottom right")
+        self.assertGreater(at(22)["fx"], 0.7)
+        self.assertGreater(at(22)["fy"], 0.7)
+        self.assertEqual(at(29.9)["zoom"], 1, "and out once it's quiet")
+        # at 2x speed the same moves come twice as early
+        fast = self.json("/api/follow", {"src": sid, "in": 0, "out": 30, "speed": 2})["keys"]
+        self.assertEqual([k["t"] * 2 for k in fast], [k["t"] for k in keys])
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
