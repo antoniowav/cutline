@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -304,15 +304,9 @@ def clean_box(box):
 
 
 def clean_crop(crop):
-    """How much is cut off each edge of a clip's picture, as shares of it. At least 5 % of the
-    picture stays each way (an Auto Short crops a wide video down to a tall strip)."""
+    """How much is cut off each edge of a clip's picture, as shares of it (0 to 45 % each)."""
     crop = crop if isinstance(crop, dict) else {}
-    out = {side: num(crop.get(side, 0), 0, 0.9) for side in "ltrb"}
-    for a, b in (("l", "r"), ("t", "b")):
-        if out[a] + out[b] > 0.95:
-            k = 0.95 / (out[a] + out[b])
-            out[a], out[b] = out[a] * k, out[b] * k
-    return out
+    return {side: num(crop.get(side, 0), 0, 0.45) for side in "ltrb"}
 
 
 TRANSITIONS = {"fade": "fade", "dip": "fadeblack", "slide": "slideleft", "wipe": "wipeleft",
@@ -436,163 +430,6 @@ def caption_words(file):
         off = seg.get("offsets", {})
         words.append({"t0": int(off.get("from", 0)) / 1000, "t1": int(off.get("to", 0)) / 1000, "w": text})
     return words
-
-
-# ---- Auto Shorts: highlights picked from the transcript, cut tight, made tall, captioned ----
-SHORT_LENGTHS = {"short": (15, 30), "long": (30, 60)}
-SHORT_SCHEMA = {"type": "object", "required": ["picks"], "properties": {"picks": {"type": "array", "items": {
-    "type": "object", "required": ["start", "end", "title", "why"],
-    "properties": {"start": {"type": "number"}, "end": {"type": "number"},
-                   "title": {"type": "string"}, "why": {"type": "string"}}}}}}
-HOOKS = re.compile(r"\b(how|why|what|secret|trick|never|always|best|worst|mistake|stop|nobody|actually|"
-                   r"here's|the reason|you need|cool|crazy|easy|wow)\b", re.I)
-
-
-def sentences_of(words):
-    """Words into sentences: ended by . ! ? or a pause of more than a second."""
-    out, cur = [], None
-    for w in words:
-        if cur and w["t0"] - cur["t1"] > 1.0:
-            out.append(cur)
-            cur = None
-        cur = cur or {"t0": w["t0"], "t1": w["t1"], "text": ""}
-        cur["t1"], cur["text"] = max(cur["t1"], w["t1"]), (cur["text"] + " " + w["w"]).strip()
-        if re.search(r"[.!?]$", w["w"]):
-            out.append(cur)
-            cur = None
-    if cur:
-        out.append(cur)
-    return out
-
-
-def claude_bin():
-    return shutil.which("claude")
-
-
-def ask_claude(sentences, count, lo, hi, work):
-    """Claude Code picks the moments: only the transcript text is sent, tools are off, and the
-    answer must fit a JSON schema. None when it can't be used."""
-    binary = claude_bin()
-    if not binary or not sentences:
-        return None
-    lines = "\n".join(f"[{s['t0']:.1f}-{s['t1']:.1f}] {s['text']}" for s in sentences)
-    prompt = (f"You pick moments from a video to post as YouTube Shorts / TikToks. Below is its transcript, one "
-              f"sentence per line as [start-end] text, in seconds.\n\nPick up to {count} moments that don't overlap, "
-              f"each {lo}-{hi} seconds long, that work on their own: a strong hook in the first seconds, one "
-              f"complete idea, a satisfying end. Start each at the start of a line and end it at the end of a line. "
-              f"Give each a punchy on-screen title (at most 6 words, same language as the transcript) and say in "
-              f"one line why it works. Best first.\n\nTranscript:\n{lines}")
-    try:
-        out = subprocess.run([binary, "-p", "--tools", "", "--no-session-persistence", "--strict-mcp-config",
-                              "--output-format", "json", "--json-schema", json.dumps(SHORT_SCHEMA)],
-                             input=prompt, capture_output=True, text=True, timeout=600, cwd=work)
-        reply = json.loads(out.stdout)
-        picks = (reply.get("structured_output") or {}).get("picks")
-        return picks if isinstance(picks, list) else None
-    except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError, AttributeError):
-        return None
-
-
-def score_moments(sentences, count, lo, hi):
-    """The built-in pick: runs of whole sentences {lo}-{hi} s long, scored on pace, a hook at the
-    start (a question, words like "secret" or "mistake") and a clean ending."""
-    found = []
-    for i, first in enumerate(sentences):
-        for j in range(i, len(sentences)):
-            d = sentences[j]["t1"] - first["t0"]
-            if d > hi:
-                break
-            if d < lo:
-                continue
-            run = sentences[i:j + 1]
-            words = sum(len(s["text"].split()) for s in run)
-            score = words / d + 2.0 * ("?" in first["text"]) + 1.5 * len(HOOKS.findall(first["text"])) \
-                + 0.5 * bool(re.search(r"[.!]$", run[-1]["text"])) - 0.02 * max(0, d - (lo + hi) / 2)
-            found.append((score, first["t0"], sentences[j]["t1"], first["text"]))
-    picks = []
-    for score, a, b, text in sorted(found, reverse=True):
-        if all(b <= p["start"] or a >= p["end"] for p in picks):
-            words = text.split()
-            picks.append({"start": a, "end": b, "title": " ".join(words[:6]).rstrip(".,!?"),
-                          "why": f"fast and hooky (score {score:.1f})"})
-        if len(picks) == count:
-            break
-    return picks
-
-
-def checked_picks(picks, sentences, count, lo, hi):
-    """Whatever picked them, keep only moments that make sense: snapped to sentence edges,
-    about the right length, not overlapping, each with a title."""
-    good = []
-    for p in picks or []:
-        try:
-            a, b = float(p["start"]), float(p["end"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if not sentences or b <= a:
-            continue
-        a = min(sentences, key=lambda s: abs(s["t0"] - a))["t0"]
-        b = min(sentences, key=lambda s: abs(s["t1"] - b))["t1"]
-        if not lo * 0.6 <= b - a <= hi * 1.3 or any(a < g["end"] and b > g["start"] for g in good):
-            continue
-        title = re.sub(r"\s+", " ", str(p.get("title") or "")).strip()[:60] or "Watch this"
-        good.append({"start": a, "end": b, "title": title, "why": str(p.get("why") or "")[:200]})
-        if len(good) == count:
-            break
-    return good
-
-
-def fit_text(text, size, aspect, per_line=16):
-    """A title for a tall frame: wrapped onto lines of about per_line characters, and its size
-    (a share of the height) brought down until the longest line fits 90 % of the width.
-    Bold sans letters are about 0.6 of the size wide."""
-    lines, line = [], ""
-    for word in text.split():
-        if line and len(line) + 1 + len(word) > per_line:
-            lines.append(line)
-            line = word
-        else:
-            line = f"{line} {word}".strip()
-    lines.append(line)
-    longest = max(len(x) for x in lines) or 1
-    return "\n".join(lines), round(min(size, 0.9 * aspect / (longest * 0.6)), 4)
-
-
-FACE_MODEL = HERE / "models/face_detection_yunet_2023mar.onnx"   # YuNet (MIT), from the OpenCV model zoo
-
-
-def face_x(path, start, length, width, height):
-    """Where the main face is, left to right (0..1), over a stretch of a video: OpenCV's YuNet face
-    detector on two frames a second, the biggest face in each. The median, or None (no OpenCV,
-    no model, or no face in most frames)."""
-    try:
-        import cv2
-        import numpy as np
-    except ImportError:
-        return None
-    if not FACE_MODEL.is_file() or not hasattr(cv2, "FaceDetectorYN"):
-        return None
-    try:
-        cv2.setLogLevel(2)                         # errors only: no notes about its graph engine
-    except AttributeError:
-        pass
-    w = 320
-    h = max(2, round(w * height / max(1, width) / 2) * 2)
-    out = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{start:.3f}", "-t", f"{length:.3f}", "-i", str(path),
-                          "-vf", f"fps=2,scale={w}:{h},format=bgr24", "-frames:v", "40", "-f", "rawvideo", "-"],
-                         capture_output=True, timeout=300).stdout
-    detector = cv2.FaceDetectorYN.create(str(FACE_MODEL), "", (w, h), 0.7, 0.3, 5000)
-    xs, n = [], len(out) // (w * h * 3)
-    for i in range(n):
-        img = np.frombuffer(out, np.uint8, w * h * 3, i * w * h * 3).reshape(h, w, 3)
-        _, faces = detector.detect(img)
-        # a speaker on camera fills a good part of the frame; a webcam bubble on a screen
-        # recording doesn't, and isn't who to crop to
-        faces = [f for f in faces if f[2] >= 0.1 * w] if faces is not None else []
-        if len(faces):
-            x, _, fw = max(faces, key=lambda f: f[2] * f[3])[:3]
-            xs.append(float(x + fw / 2) / w)
-    return sorted(xs)[len(xs) // 2] if xs and len(xs) >= max(1, n // 4) else None
 
 
 def spread(hist, total):
@@ -725,15 +562,6 @@ def follow_keys(samples, length, t0=0.0):
         keys.append(key(min(length, at + 0.5), want))
         now, since = want, at
     return keys if len(keys) > 1 else []
-
-
-def tall_crop(width, height, fx):
-    """The crop that turns a wide picture into a 9:16 strip centred on fx (it fills exactly)."""
-    if width / max(1, height) <= 9 / 16:
-        return {"l": 0, "t": 0, "r": 0, "b": 0}
-    v = (9 / 16) / (width / height)
-    left = min(max(fx - v / 2, 0), 1 - v)
-    return {"l": round(left, 5), "t": 0, "r": round(1 - v - left, 5), "b": 0}
 
 
 def eased(keys, field, T):
@@ -1216,170 +1044,6 @@ class App:
                 return
             self.export = job = {"state": "running", "progress": 0.0, "output": "", "error": "", "kind": "captions"}
         threading.Thread(target=self.run_export, args=(job, steps, wav, work), daemon=True).start()
-
-    def start_shorts(self, project, count=3, length="short", use_claude=True):
-        """Auto Shorts: transcribe, pick moments (Claude Code, or the built-in scoring), then make
-        each one a new tall project: the pauses cut, the crop on the speaker, captions on."""
-        with self.lock:
-            if self.busy():
-                return
-            try:
-                binary, models = whisper_bin(), whisper_models()
-                if not binary or not models:
-                    raise ValueError("Auto Shorts need auto captions first: install whisper.cpp and download the model "
-                                     "(＋ Title → Auto captions…)")
-                project = json.loads(json.dumps(project))
-                steps, wav, work = self.build_export(project, voice=True)
-                count = int(num(count, 1, 5))
-                lo, hi = SHORT_LENGTHS.get(length, SHORT_LENGTHS["short"])
-                steps.append({"args": [binary, "-m", str(models[0]), "-f", str(wav), "-l", "auto", "-ml", "1", "-sow",
-                                       "-oj", "-of", str(work / "words"), "-pp", "-t", str(max(2, min(8, (os.cpu_count() or 4) // 2)))],
-                              "length": 0, "weight": max(1.0, steps[0]["length"]), "percent": True,
-                              "finish": lambda job: self.make_shorts(job, project, caption_words(work / "words.json"),
-                                                                     count, lo, hi, use_claude, work)})
-            except ValueError as e:
-                self.export = {"state": "error", "progress": 0, "output": "", "error": str(e), "kind": "shorts"}
-                return
-            self.export = job = {"state": "running", "progress": 0.0, "output": "", "error": "", "kind": "shorts"}
-        threading.Thread(target=self.run_export, args=(job, steps, wav, work), daemon=True).start()
-
-    def make_shorts(self, job, project, words, count, lo, hi, use_claude, work):
-        sentences = sentences_of(words)
-        if not sentences:
-            raise ValueError("No speech found to make a Short from")
-        job["note"] = "Claude Code is picking the moments…" if use_claude and claude_bin() else "Picking the moments…"
-        asked = ask_claude(sentences, count, lo, hi, work) if use_claude else None
-        picks = checked_picks(asked, sentences, count, lo, hi)
-        how = "Claude Code" if picks else "built-in"
-        if not picks:
-            picks = checked_picks(score_moments(sentences, count, lo, hi), sentences, count, lo, hi)
-        if not picks:
-            raise ValueError(f"No {lo}-{hi} s stretch of speech found: try the longer length")
-        made = []
-        for n, pick in enumerate(picks, 1):
-            job["note"] = f"Making Short {n} of {len(picks)}…"
-            made.append(self.make_short(project, words, pick, n))
-        job["result"] = {"how": how, "shorts": made}
-
-    def make_short(self, project, words, pick, n):
-        """One Short as a new project: the moment with its pauses cut, tall, captioned, titled."""
-        clean = clean_project(project)
-        tracks = {t["id"]: t for t in clean["tracks"]}
-        order = [t["id"] for t in clean["tracks"]]
-        visible = [c for c in clean["clips"] if c.get("kind") != "text" and c["src"] in self.sources
-                   and not tracks[c["track"]].get("hidden")]
-        speed = lambda c: c.get("speed", 1)
-        end = lambda c: c["start"] + (c["out"] - c["in"]) / speed(c)
-        is_picture = lambda c: self.sources[c["src"]].info.get("video") and not c["audioOnly"]
-        # the spoken parts of the moment: words a short pause apart stay together
-        spans = []
-        for w in (w for w in words if w["t0"] >= pick["start"] - 0.05 and w["t1"] <= pick["end"] + 0.05):
-            a, b = max(pick["start"], w["t0"] - 0.1), min(pick["end"], w["t1"] + 0.12)
-            if spans and a - spans[-1][1] <= 0.4:
-                spans[-1][1] = max(spans[-1][1], b)
-            else:
-                spans.append([a, b])
-        # each span, cut at the clips' edges, becomes clips on the new timeline
-        H = 1920 if min(clean["canvas"]["w"], clean["canvas"]["h"]) >= 1080 else 1280
-        W, fps = H * 9 // 16, clean["canvas"]["fps"]
-        new_clips, at, faces, mapping, watched, screen_mode = [], 0.0, {}, [], {}, False
-        for a, b in spans:
-            edges = sorted({a, b, *(x for c in visible for x in (c["start"], end(c)) if a < x < b)})
-            for s, e in zip(edges, edges[1:], strict=False):
-                if e - s < 0.04:
-                    continue
-                mid = (s + e) / 2
-                under = [c for c in visible if c["start"] <= mid < end(c)]
-                # what the viewer sees: the top full-screen picture (else the top free one)
-                shown = sorted((c for c in under if is_picture(c) and c["layout"] in ("full", "free")),
-                               key=lambda c: (c["layout"] == "full", order.index(c["track"])))
-                for c in under:
-                    if not (shown and c is shown[-1]) and not self.sources[c["src"]].info["audio"]:
-                        continue
-                    if c.get("duck") or (shown and c is not shown[-1] and is_picture(c) and not c["volume"]):
-                        continue
-                    src_in = c["in"] + (s - c["start"]) * speed(c)
-                    clip = {"id": len(new_clips) + 1, "src": c["src"], "start": round(at, 4), "in": round(src_in, 4),
-                            "out": round(src_in + (e - s) * speed(c), 4), "size": 0.3, "volume": c["volume"]}
-                    if speed(c) != 1:
-                        clip["speed"] = speed(c)
-                    if shown and c is shown[-1]:
-                        info = self.sources[c["src"]].info
-                        key = (c["src"], round(src_in, 1))
-                        if c["rotate"] == 0 and key not in faces:
-                            faces[key] = face_x(self.sources[c["src"]].path, src_in, (e - s) * speed(c),
-                                                info["width"], info["height"])
-                        clip.update(track=1, layout="full", color=c["color"], lut=c["lut"], rotate=c["rotate"])
-                        if faces.get(key) is not None or info["width"] <= info["height"]:
-                            # a speaker (or a tall video): fill the frame, the crop on the face
-                            fx = faces.get(key) if faces.get(key) is not None else 0.5
-                            clip.update(fit="fill", crop=tall_crop(info["width"], info["height"], fx))
-                        else:
-                            # no face, wide: a screen recording, most likely. Show all of it across the
-                            # frame on blurred bars, and zoom in where the action is.
-                            if c["id"] not in watched:     # the whole moment of this clip, once
-                                a0 = c["in"] + (max(pick["start"], c["start"]) - c["start"]) * speed(c)
-                                a1 = c["in"] + (min(pick["end"], end(c)) - c["start"]) * speed(c)
-                                watched[c["id"]] = activity(self.sources[c["src"]].path, a0, a1 - a0,
-                                                            info["width"], info["height"])
-                            keys = follow_keys(watched[c["id"]], (e - s) * speed(c), src_in)
-                            clip.update(fit="fit", bars="blur")
-                            screen_mode = True
-                            if keys:
-                                clip["keys"] = [{**k, "t": round(k["t"] / speed(c), 3)} for k in keys]
-                    else:                          # other sound keeps a track of its own
-                        clip.update(track=10 + order.index(c["track"]), layout="full", audioOnly=True)
-                    new_clips.append(clip)
-                mapping.append((s, e, at))
-                at += e - s
-        # captions, one word at a time, moved onto the new timeline; and the title on top
-        def moved(x):
-            for s, e, base in mapping:
-                if s <= x <= e:
-                    return base + x - s
-            return None
-        caps = []
-        for w in words:
-            t0 = moved(w["t0"])
-            if t0 is not None and pick["start"] <= w["t0"] <= pick["end"]:
-                caps.append({"t0": t0, "t1": moved(w["t1"]) or t0 + 0.3, "w": w["w"]})
-        look = {"color": "#ffffff", "bold": True, "bg": False, "outline": 0.12, "outlineColor": "#000000", "shadow": 0.06}
-        for i, w in enumerate(caps):
-            t1 = max(w["t1"], w["t0"] + 0.2)
-            if i + 1 < len(caps):
-                t1 = min(t1 if caps[i + 1]["t0"] - t1 >= 0.4 else caps[i + 1]["t0"], caps[i + 1]["t0"])
-            if t1 - w["t0"] > 0.04:
-                word, size = fit_text(w["w"], 0.055, W / H, per_line=40)
-                # on a speaker, over the lower part of the picture; under a screen, below it
-                new_clips.append({"id": len(new_clips) + 1, "kind": "text", "src": "", "track": 3, "start": round(w["t0"], 4),
-                                  "in": 0, "out": round(t1 - w["t0"], 4), "text": word, "x": 0.5,
-                                  "y": 0.76 if screen_mode else 0.66, "tsize": size,
-                                  **look, "animIn": "pop", "fadeIn": 0.12, "animOut": "none"})
-        title, size = fit_text(pick["title"], 0.05, W / H)
-        new_clips.append({"id": len(new_clips) + 1, "kind": "text", "src": "", "track": 4, "start": 0, "in": 0,
-                          "out": round(min(3.0, at), 4), "text": title, "x": 0.5, "y": 0.16, "tsize": size,
-                          **look, "color": "#ffeb3b", "outline": 0.14, "shadow": 0.08, "animIn": "pop", "fadeIn": 0.3,
-                          "animOut": "fade", "fadeOut": 0.3})
-        used = sorted({c["src"] for c in new_clips if c.get("src")})
-        name = safe_name(f"{project.get('name', 'project')} - Short {n}") or f"Short {n}"
-        file, k = PROJECTS / f"{name}.json", 2
-        while file.exists():
-            file, k = PROJECTS / f"{name} {k}.json", k + 1
-        short = {"version": 2, "name": file.stem, "created": time.strftime("%Y-%m-%d %H:%M"),
-                 "canvas": {"w": W, "h": H, "fps": fps},
-                 "sources": [{"id": sid, "path": str(self.sources[sid].path)} for sid in used],
-                 "tracks": [{"id": 1, "name": "V1", "hidden": False, "muted": False},
-                            *({"id": i, "name": f"A{n}", "hidden": False, "muted": False}
-                              for n, i in enumerate(sorted({c["track"] for c in new_clips if c["track"] >= 10}), 2)),
-                            {"id": 3, "name": "CC", "hidden": False, "muted": False},
-                            {"id": 4, "name": "T", "hidden": False, "muted": False}],
-                 "clips": new_clips, "markers": []}
-        tmp = file.with_suffix(".tmp")
-        tmp.write_text(json.dumps(short, indent=1))
-        tmp.replace(file)
-        return {"file": file.name, "name": file.stem, "title": pick["title"], "why": pick["why"],
-                "from": round(pick["start"], 2), "to": round(pick["end"], 2), "length": round(at, 2),
-                "faces": sum(1 for v in faces.values() if v is not None), "cuts": len(mapping)}
 
     def start_model_download(self):
         """Fetch the speech model once, from whisper.cpp's own page on Hugging Face."""
@@ -2207,14 +1871,6 @@ def handler_for(app: App):
                 return self.send_json({"videos": list_videos(audio=True), "videosDir": home_label(VIDEOS)})
             if p == "/api/export":
                 return self.send_json(app.export)
-            if p == "/api/shorts":
-                try:
-                    import cv2
-                    opencv = hasattr(cv2, "FaceDetectorYN") and FACE_MODEL.is_file()
-                except ImportError:
-                    opencv = False
-                return self.send_json({"claude": bool(claude_bin()), "whisper": bool(whisper_bin()),
-                                       "models": bool(whisper_models()), "opencv": opencv})
             if p == "/api/captions":
                 models = whisper_models()
                 return self.send_json({"whisper": whisper_bin(), "models": [m.name for m in models],
@@ -2360,10 +2016,6 @@ def handler_for(app: App):
                     return self.send_json(app.export)
                 if self.path == "/api/captions":
                     app.start_captions(body.get("project") or app.load(), body.get("language", "auto"))
-                    return self.send_json(app.export)
-                if self.path == "/api/shorts":
-                    app.start_shorts(body.get("project") or app.load(), body.get("count", 3), body.get("length", "short"),
-                                     bool(body.get("claude", True)))
                     return self.send_json(app.export)
                 if self.path == "/api/model/download":
                     app.start_model_download()

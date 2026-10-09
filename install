@@ -24,7 +24,6 @@ if $link; then
 else
   install -Dm755 cutline "$PREFIX/lib/cutline/cutline"
   install -Dm644 index.html pick.html -t "$PREFIX/lib/cutline/"
-  install -Dm644 models/face_detection_yunet_2023mar.onnx models/LICENSE-yunet -t "$PREFIX/lib/cutline/models/"
   target="$PREFIX/lib/cutline/cutline"
 fi
 ln -sfn "$target" "$PREFIX/bin/cutline"

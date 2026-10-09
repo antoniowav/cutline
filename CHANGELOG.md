@@ -5,6 +5,17 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-09
+
+### Removed
+- Auto Shorts. Cutting a wide video down to a tall one didn't make Shorts worth posting,
+  least of all from screen recordings; a Short recorded for it works better. With it go the
+  bundled face model and the optional OpenCV and Claude Code. Follow the action (Motion ▾)
+  and auto captions stay.
+
+### Changed
+- Crops are back to at most 45 % a side.
+
 ## [0.10.0] - 2026-10-09
 
 ### Added
@@ -195,7 +206,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/antoniowav/cutline/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/antoniowav/cutline/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/antoniowav/cutline/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/antoniowav/cutline/compare/v0.7.0...v0.8.0

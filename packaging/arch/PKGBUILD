@@ -1,6 +1,6 @@
 # Maintainer: Antonio Piattelli <hello@antoniopiattelli.com>
 pkgname=cutline
-pkgver=0.10.0
+pkgver=0.11.0
 pkgrel=1
 pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)'
 arch=('any')
@@ -13,9 +13,7 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             'xdg-user-dirs: find your Videos folder'
             'xdg-utils: show exports in the file manager, use your default browser'
             'whisper-cpp: auto captions'
-            'ggml-vulkan: faster auto captions on the GPU'
-            "python-opencv: Auto Shorts follow the speaker's face"
-            'claude-code: Auto Shorts pick the moments with Claude')
+            'ggml-vulkan: faster auto captions on the GPU')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('184a91d638545c87c7f03a3085da1e5e2a807f43ca3a8df6b1a556a2a38c1efa')
 
@@ -29,7 +27,6 @@ package() {
   cd "$pkgname-$pkgver"
   install -Dm755 cutline "$pkgdir/usr/lib/$pkgname/cutline"
   install -Dm644 index.html pick.html -t "$pkgdir/usr/lib/$pkgname/"
-  install -Dm644 models/face_detection_yunet_2023mar.onnx models/LICENSE-yunet -t "$pkgdir/usr/lib/$pkgname/models/"
   install -dm755 "$pkgdir/usr/bin"
   ln -s "/usr/lib/$pkgname/cutline" "$pkgdir/usr/bin/cutline"
   install -Dm644 assets/cutline.desktop "$pkgdir/usr/share/applications/cutline.desktop"

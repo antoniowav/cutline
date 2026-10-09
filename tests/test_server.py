@@ -77,25 +77,9 @@ open({str(cls.fake_whisper_log)!r}, "w").write(json.dumps(heard))
 for p in (0, 50, 100):
     print(f"whisper_print_progress_callback: progress = {{p}}%", file=sys.stderr)
 words = [(100, 400, " Hello"), (450, 900, " there."), (2000, 2500, " [Music]")]
-try:
-    words = json.load(open({str(tmp / "whisper-words.json")!r}))
-except OSError:
-    pass
 json.dump({{"transcription": [{{"offsets": {{"from": f, "to": t}}, "text": w}} for f, t, w in words]}}, open(out + ".json", "w"))
 """)
         (bin_dir / "whisper-cli").chmod(0o755)
-        cls.whisper_words = tmp / "whisper-words.json"
-        # A stand-in Claude Code: notes how it was called, answers with picks to check.
-        cls.fake_claude_log = tmp / "claude-heard.json"
-        (bin_dir / "claude").write_text(f"""#!{sys.executable}
-import json, sys
-open({str(cls.fake_claude_log)!r}, "w").write(json.dumps({{"args": sys.argv[1:], "prompt": sys.stdin.read()}}))
-picks = [{{"start": 2.0, "end": 24.0, "title": "The one trick", "why": "hook"}},
-         {{"start": 500, "end": 520, "title": "not in the video", "why": "x"}},
-         {{"start": 3.0, "end": 20.0, "title": "overlaps the first", "why": "x"}}]
-print(json.dumps({{"type": "result", "is_error": False, "structured_output": {{"picks": picks}}}}))
-""")
-        (bin_dir / "claude").chmod(0o755)
         models = tmp / "data" / "cutline" / "models"
         models.mkdir(parents=True)
         (models / "ggml-test.bin").write_bytes(b"0" * (2 << 20))
@@ -850,72 +834,6 @@ print(json.dumps({{"type": "result", "is_error": False, "structured_output": {{"
         heard = json.loads((self.fake_whisper_log).read_text())
         self.assertEqual((heard["rate"], heard["channels"]), (16000, 1))
         self.assertAlmostEqual(heard["seconds"], 3, delta=0.1)
-
-    def test_9m_auto_shorts(self):
-        v = self.videos
-        ffmpeg("-f", "lavfi", "-i", f"testsrc2=s=640x360:r={FPS}:d=40", "-f", "lavfi", "-i", "sine=f=300:d=40",
-               "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(v / "talk.mp4"))
-        # 40 s of "speech": a sentence every 2 s (with a 1 s pause before 12 s), whose words fill 1.5 s each
-        words = []
-        for s in range(20):
-            base = s * 2000 + (1000 if s >= 6 else 0)
-            for k, w in enumerate(["This", "is", "sentence", f"{s}."] if s else ["How", "does", "this", "work?"]):
-                words.append([base + k * 375, base + k * 375 + 350, " " + w])
-        self.whisper_words.write_text(json.dumps([w for w in words if w[1] <= 40000]))
-        self.json("/api/new", {"path": str(v / "talk.mp4")})
-        d = self.json("/api/project")
-        project = d["project"]
-        status = self.json("/api/shorts")
-        self.assertTrue(status["claude"] and status["whisper"] and status["models"], status)
-
-        def run(**options):
-            self.json("/api/shorts", {"project": project, **options})
-            deadline = time.time() + 90
-            while (state := self.json("/api/export"))["state"] == "running":
-                self.assertLess(time.time(), deadline)
-                time.sleep(0.3)
-            self.assertEqual(state["state"], "done", state["error"])
-            return state["result"]
-
-        result = run(count=3, length="short", claude=True)
-        heard = json.loads(self.fake_claude_log.read_text())
-        self.assertEqual(heard["args"][:3], ["-p", "--tools", ""], "Claude Code runs with its tools off")
-        self.assertIn("--json-schema", heard["args"])
-        self.assertIn("[0.0-1.5] How does this work?", heard["prompt"], "it gets the transcript, line by line")
-        self.assertEqual(result["how"], "Claude Code")
-        self.assertEqual([s["title"] for s in result["shorts"]], ["The one trick"], "made-up and overlapping picks dropped")
-        short = result["shorts"][0]
-        self.assertEqual(short["from"], 2.0)
-        self.assertAlmostEqual(short["to"], 24.475, delta=0.01, msg="snapped to the end of sentence 11")
-        made = json.loads((Path(self.tmp.name) / "data/cutline/projects" / short["file"]).read_text())
-        self.assertEqual((made["canvas"]["w"], made["canvas"]["h"]), (720, 1280), "tall")
-        pictures = [c for c in made["clips"] if c.get("kind") != "text"]
-        self.assertEqual(len(pictures), short["cuts"], "one clip per spoken part")
-        self.assertEqual(short["cuts"], 2, "the 1 s pause before 12 s is cut out")
-        # 2.0-11.595 (to 0.12 s after the last word) and 12.9-24.475 (from 0.1 s before the next)
-        self.assertAlmostEqual(short["length"], 9.595 + 11.575, delta=0.05)
-        # no face (no OpenCV here) in a wide video: screen mode, all of it shown on blurred bars
-        self.assertEqual((pictures[0]["fit"], pictures[0]["bars"]), ("fit", "blur"))
-        self.assertNotIn("crop", pictures[0])
-        captions = [c for c in made["clips"] if c.get("kind") == "text" and c["track"] == 3]
-        title = [c for c in made["clips"] if c.get("kind") == "text" and c["track"] == 4]
-        self.assertEqual(len(captions), 11 * 4, "one caption per word")
-        self.assertEqual(title[0]["text"], "The one trick")
-        starts = sorted(c["start"] for c in captions)
-        self.assertTrue(all(b > a for a, b in zip(starts, starts[1:], strict=False)))
-        # the Short exports like any project
-        self.json("/api/openproject", {"file": short["file"]})
-        state = self.export(self.json("/api/project")["project"])
-        self.assertEqual(state["state"], "done", state["error"])
-        info = probe(state["output"])
-        video = next(s for s in info["streams"] if s["codec_type"] == "video")
-        self.assertAlmostEqual(int(video["nb_read_frames"]) / FPS, short["length"], delta=0.1)
-
-        # without Claude Code: the built-in pick, starting at the question
-        self.json("/api/new", {"path": str(v / "talk.mp4")})
-        result = run(count=1, length="short", claude=False)
-        self.assertEqual(result["how"], "built-in")
-        self.assertEqual(result["shorts"][0]["from"], 0.0, "the question makes the best hook")
 
     def test_9n_follow_the_action(self):
         v = self.videos
