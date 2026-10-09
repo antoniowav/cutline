@@ -1,0 +1,21 @@
+pkgbase = cutline
+	pkgdesc = Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)
+	pkgver = 0.14.0
+	pkgrel = 1
+	url = https://github.com/antoniowav/cutline
+	arch = any
+	license = MIT
+	depends = python
+	depends = ffmpeg
+	depends = hicolor-icon-theme
+	optdepends = chromium: editor window (or any Chromium-based browser; see CUTLINE_BROWSER)
+	optdepends = vulkan-driver: GPU HDR tone mapping with libplacebo
+	optdepends = libva-driver: GPU-made preview proxies (VA-API)
+	optdepends = xdg-user-dirs: find your Videos folder
+	optdepends = xdg-utils: show exports in the file manager, use your default browser
+	optdepends = whisper-cpp: auto captions
+	optdepends = ggml-vulkan: faster auto captions on the GPU
+	source = cutline-0.14.0.tar.gz::https://github.com/antoniowav/cutline/archive/refs/tags/v0.14.0.tar.gz
+	sha256sums = ef8aee5254dac0ead975b0129ef88e3cab18cdc31a998ce702de204ae5887aeb
+
+pkgname = cutline
