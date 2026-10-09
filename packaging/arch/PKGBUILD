@@ -2,7 +2,7 @@
 pkgname=cutline
 pkgver=0.14.0
 pkgrel=1
-pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)'
+pkgdesc="Multi-track video editor for creators: titles, auto captions, transitions, colour, voice enhance, frame-exact ffmpeg export (browser UI)"
 arch=('any')
 url='https://github.com/antoniowav/cutline'
 license=('MIT')
