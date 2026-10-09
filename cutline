@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 HERE = Path(__file__).resolve().parent
 
 

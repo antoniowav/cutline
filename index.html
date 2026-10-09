@@ -10,9 +10,26 @@
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
                font-family:var(--font), monospace; font-size:13px; overflow:hidden; }
   body { display:flex; flex-direction:column; }
-  header, #inspector { display:flex; align-items:center; gap:12px; padding:7px 12px; background:var(--bg2);
+  header { display:flex; align-items:center; gap:12px; padding:7px 12px; background:var(--bg2);
            border-bottom:1px solid var(--bg3); white-space:nowrap; flex-wrap:wrap; row-gap:6px; }
-  #inspector { border-top:1px solid var(--bg3); min-height:38px; flex-wrap:wrap; row-gap:6px; }   /* wraps on small screens */
+  #work { flex:1; min-height:0; display:flex; }
+  /* the inspector: a side column of sections, each a wrapping row of controls */
+  #inspector { width:340px; flex:none; overflow-y:auto; background:var(--bg2); border-left:1px solid var(--bg3);
+    padding:10px 12px 16px; display:flex; flex-direction:column; gap:8px; }
+  #selInfo { font-weight:700; color:var(--fg); overflow-wrap:anywhere; }
+  #inspector h4 { flex-basis:100%; margin:8px 0 0; font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+    color:var(--muted); border-top:1px solid var(--bg3); padding-top:8px; }
+  #inspector label { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  #inspector input[type=range] { width:130px; }
+  #mediaTools, #textTools, #fadeTools, #soundTools { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+  #cropPanel, #lookPanel, #motionPanel, #colourPanel, #silencePanel { position:static !important; flex-basis:100%;
+    min-width:0 !important; margin:2px 0 4px; }
+  #colourWrap, #cropWrap, #lookWrap, #motionWrap { flex-basis:100%; }
+  #palette { bottom:auto !important; top:34px; left:0; right:auto !important; }
+  @media (max-width: 1000px) {
+    #work { flex-direction:column; }
+    #inspector { width:auto; max-height:38vh; border-left:0; border-top:1px solid var(--bg3); }
+  }
   .name { font-weight:700; overflow:hidden; text-overflow:ellipsis; max-width:30vw; min-width:4em; cursor:text;
           border-bottom:1px dashed transparent; }
   .name:hover { border-bottom-color:var(--muted); }
@@ -43,9 +60,9 @@
   .caption { position:absolute; transform:translate(-50%,-50%); white-space:pre; text-align:center; font-weight:bold;
     line-height:1.15; pointer-events:auto; cursor:move; user-select:none; }
   .caption.sel { outline:2px solid var(--accent); outline-offset:3px; }
-  #textTools, #mediaTools { display:flex; align-items:center; gap:8px; flex-wrap:wrap; row-gap:6px; }
+
   #textInput { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px;
-    padding:3px 6px; width:180px; resize:vertical; }
+    padding:3px 6px; width:100%; resize:vertical; }
   #fadeTools { display:flex; align-items:center; gap:8px; }
   #fadeTools input, #thex { font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted);
     border-radius:4px; padding:2px 4px; }
@@ -69,7 +86,7 @@
   #colourPanel .row { display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
   #colourPanel hr { border:0; border-top:1px solid var(--bg3); margin:2px 0; width:100%; }
   #keyHex { width:76px; font:inherit; color:var(--fg); background:var(--bg); border:1px solid var(--muted); border-radius:4px; padding:2px 4px; }
-  #soundTools { display:flex; align-items:center; gap:8px; position:relative; }
+  #soundTools { position:relative; }
   #silencePanel { display:none; position:absolute; bottom:34px; right:0; z-index:2000; background:var(--bg2);
     border:1px solid var(--muted); border-radius:6px; padding:8px 10px; flex-direction:column; gap:6px; min-width:270px; }
   #silencePanel.open { display:flex; }
@@ -172,11 +189,11 @@
   <label class="muted" title="Make the export as loud as YouTube, TikTok and Spotify play it (-14 LUFS), so it's not too quiet or too loud"><input id="loud" type="checkbox"> Loudness</label>
   <button class="primary" id="exportBtn">Export</button>
 </header>
-<div id="stage"><div id="box"><div id="captions"></div></div><div id="frame"><i data-c="nw"></i><i data-c="ne"></i><i data-c="sw"></i><i data-c="se"></i></div></div>
+<div id="work"><div id="stage"><div id="box"><div id="captions"></div></div><div id="frame"><i data-c="nw"></i><i data-c="ne"></i><i data-c="sw"></i><i data-c="se"></i></div></div>
 <div id="inspector">
-  <span class="muted" id="selInfo">Click a clip to select it</span>
-  <span class="spacer"></span>
+  <span id="selInfo">Click a clip to select it</span>
   <span id="mediaTools">
+  <h4>Picture</h4>
   <label class="muted">Layout
     <select id="layout" disabled>
       <option value="full">Full screen</option><option value="tl">Top left</option>
@@ -190,31 +207,14 @@
   <button id="arrangeBtn" title="Put the clips under the playhead side by side, in equal columns">Side by side</button>
   <label class="muted">Size <input id="size" type="range" min="10" max="70" step="1" value="30" disabled> <span id="sizeVal">30%</span></label>
   <button id="rotateBtn" title="Turn the picture a quarter turn clockwise" disabled>⟳ 90°</button>
-  <span id="cropWrap"><button id="cropBtn" title="Cut off the picture's edges" disabled>Crop</button>
+  <span id="cropWrap"><button id="cropBtn" title="Cut off the picture's edges" disabled>Crop ▾</button>
     <span id="cropPanel">
       <label class="muted">Left <input id="cropl" type="range" min="0" max="45" step="0.5" value="0"></label>
       <label class="muted">Top <input id="cropt" type="range" min="0" max="45" step="0.5" value="0"></label>
       <label class="muted">Right <input id="cropr" type="range" min="0" max="45" step="0.5" value="0"></label>
       <label class="muted">Bottom <input id="cropb" type="range" min="0" max="45" step="0.5" value="0"></label>
       <button id="cropReset">No crop</button></span></span>
-  <button id="detachBtn" title="Put this clip's sound on its own clip, so it can be moved and trimmed apart" disabled>Detach audio</button>
-  <span id="colourWrap"><button id="colourBtn" title="Colour, LUT and green screen for the selected clips" disabled>Colour ▾</button>
-    <span id="colourPanel">
-      <label class="muted">Look <select id="cLook"><option value="">Choose…</option><option value="natural">Natural (reset)</option>
-        <option value="warm">Warm</option><option value="cool">Cool</option><option value="vivid">Vivid</option><option value="punchy">Punchy</option>
-        <option value="faded">Faded</option><option value="mono">Black &amp; white</option><option value="noir">Noir</option></select></label>
-      <label class="muted">Brightness <input id="cB" type="range" min="30" max="200" step="1" value="100"></label>
-      <label class="muted">Contrast <input id="cC" type="range" min="30" max="200" step="1" value="100"></label>
-      <label class="muted">Saturation <input id="cS" type="range" min="0" max="300" step="1" value="100"></label>
-      <label class="muted">Warmth <input id="cT" type="range" min="-100" max="100" step="1" value="0"></label>
-      <label class="muted" id="lutLabel" title=".cube files in ~/Videos/LUTs or Downloads">LUT <select id="cLut"><option value="">None</option></select></label>
-      <hr>
-      <span class="row"><label class="muted"><input id="kOn" type="checkbox"> Green screen</label>
-        <input id="keyHex" maxlength="7" spellcheck="false" value="#00ff00" title="The colour to take out, as #rrggbb">
-        <button class="sw" id="keySw" title="Pick it from the preview"><i></i></button></span>
-      <label class="muted" title="How close a colour has to be to go">Strength <input id="kSim" type="range" min="1" max="60" step="1" value="15"></label>
-      <label class="muted" title="How soft the cut-out edge is">Soft edge <input id="kBlend" type="range" min="0" max="50" step="1" value="8"></label>
-    </span></span>
+  <h4>Motion &amp; time</h4>
   <span id="motionWrap"><button id="motionBtn" title="Zoom, focus, opacity and keyframes (Z punches in)" disabled>Motion ▾</button>
     <span id="motionPanel">
       <label class="muted">Zoom <span><input id="mzoom" type="range" min="100" max="300" step="1" value="100"> <span id="mzoomVal">100%</span></span></label>
@@ -235,8 +235,27 @@
     <option value="">Cut</option><option value="fade">Crossfade</option><option value="dip">Dip to black</option><option value="slide">Slide</option>
     <option value="wipe">Wipe</option><option value="circle">Circle</option><option value="zoom">Zoom</option></select>
     <input id="transDur" type="number" min="0.1" max="3" step="0.1" value="0.5" disabled> s</label>
+  <h4>Colour</h4>
+  <span id="colourWrap"><button id="colourBtn" title="Colour, LUT and green screen for the selected clips" disabled>Colour ▾</button>
+    <span id="colourPanel">
+      <label class="muted">Look <select id="cLook"><option value="">Choose…</option><option value="natural">Natural (reset)</option>
+        <option value="warm">Warm</option><option value="cool">Cool</option><option value="vivid">Vivid</option><option value="punchy">Punchy</option>
+        <option value="faded">Faded</option><option value="mono">Black &amp; white</option><option value="noir">Noir</option></select></label>
+      <label class="muted">Brightness <input id="cB" type="range" min="30" max="200" step="1" value="100"></label>
+      <label class="muted">Contrast <input id="cC" type="range" min="30" max="200" step="1" value="100"></label>
+      <label class="muted">Saturation <input id="cS" type="range" min="0" max="300" step="1" value="100"></label>
+      <label class="muted">Warmth <input id="cT" type="range" min="-100" max="100" step="1" value="0"></label>
+      <label class="muted" id="lutLabel" title=".cube files in ~/Videos/LUTs or Downloads">LUT <select id="cLut"><option value="">None</option></select></label>
+      <hr>
+      <span class="row"><label class="muted"><input id="kOn" type="checkbox"> Green screen</label>
+        <input id="keyHex" maxlength="7" spellcheck="false" value="#00ff00" title="The colour to take out, as #rrggbb">
+        <button class="sw" id="keySw" title="Pick it from the preview"><i></i></button></span>
+      <label class="muted" title="How close a colour has to be to go">Strength <input id="kSim" type="range" min="1" max="60" step="1" value="15"></label>
+      <label class="muted" title="How soft the cut-out edge is">Soft edge <input id="kBlend" type="range" min="0" max="50" step="1" value="8"></label>
+    </span></span>
   </span>
   <span id="textTools" style="display:none">
+    <h4>Text</h4>
     <textarea id="textInput" rows="1" placeholder="Type the text" title="Enter starts a new line"></textarea>
     <label class="muted">Size <input id="tsize" type="range" min="2" max="25" step="0.5" value="7"></label>
     <select id="tfont" title="Font"></select>
@@ -263,6 +282,7 @@
       </span></span>
   </span>
   <span id="fadeTools" style="display:none">
+    <h4 id="fadeHead">Fades</h4>
     <label class="muted" title="How it comes in, over this many seconds"><select id="animIn">
       <option value="none">No intro</option><option value="fade">Fade in</option><option value="pop">Pop in</option>
       <option value="slide">Slide up</option><option value="type">Typewriter</option><option value="bounce">Bounce</option></select>
@@ -272,12 +292,14 @@
       <option value="slide">Slide down</option></select>
       <span id="fadeOutWord">out</span> <input id="fadeOut" type="number" min="0" max="30" step="0.1" value="0"> s</label>
   </span>
+  <h4 id="soundHead">Sound</h4>
   <label class="muted" id="volTools" title="Double-click to reset to 100%">Volume <input id="vol" type="range" min="0" max="200" step="1" value="100" disabled> <span id="volVal">100%</span></label>
   <span id="soundTools" style="display:none">
+    <button id="detachBtn" title="Put this clip's sound on its own clip, so it can be moved and trimmed apart" disabled>Detach audio</button>
     <label class="muted" id="duckLabel" title="Music gets about 12 dB quieter while someone speaks, and comes back in the pauses"><input id="duck" type="checkbox"> Duck under voice</label>
     <label class="muted" title="Clearer speech: less background noise and hiss, more presence, evened out. Noise removal is heard in the export.">Voice
       <select id="voiceSel"><option value="">Off</option><option value="light">Enhance</option><option value="strong">Enhance+</option></select></label>
-    <button id="silenceBtn" title="Find the pauses in the selected clips and cut them out">✂ Silences</button>
+    <button id="silenceBtn" title="Find the pauses in the selected clips and cut them out">✂ Silences ▾</button>
     <span id="silencePanel">
       <label class="muted" title="Quieter than this counts as a pause">Quieter than <span><input id="sLevel" type="range" min="-60" max="-20" step="1" value="-38"> <span id="sLevelVal">-38 dB</span></span></label>
       <label class="muted" title="Shorter pauses are kept">Pauses longer than <span><input id="sLeast" type="range" min="2" max="20" step="1" value="5"> <span id="sLeastVal">0.5 s</span></span></label>
@@ -285,6 +307,7 @@
       <button id="silenceGo" class="primary">Cut the pauses</button>
     </span>
   </span>
+</div>
 </div>
 <div id="timelineWrap"><canvas id="tl"></canvas></div>
 <footer>
@@ -954,6 +977,8 @@ function showInspector() {
     $("animIn").value = tv(one, "animIn"); $("animOut").value = tv(one, "animOut"); }
   for (const id of ["animIn", "animOut"]) $(id).style.display = text ? "" : "none";
   $("fadeInWord").style.display = $("fadeOutWord").style.display = text ? "none" : "";
+  $("fadeHead").textContent = text ? "Animation" : "Fades";
+  $("soundHead").style.display = text ? "none" : "";
   if (!text) { $("lookPanel").classList.remove("open"); $("palette").classList.remove("open"); }
   const fades = !!one;                                 // titles, sound and (now) pictures fade
   const vid = one && !text && !isAudio(one);
@@ -1004,7 +1029,6 @@ $("layout").onchange = () => {
 $("rotateBtn").onclick = () => { const c = selMedia(); if (c) change(() => { c.rotate = ((c.rotate || 0) + 90) % 360; }); };
 $("cropBtn").onclick = (e) => { e.stopPropagation(); $("cropPanel").classList.toggle("open"); };
 $("cropPanel").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => $("cropPanel").classList.remove("open"));
 for (const side of "ltrb") {
   $(`crop${side}`).oninput = () => { const c = selMedia(); if (!c) return; sliderStart();
     c.crop = { ...NO_CROP, ...c.crop, [side]: $(`crop${side}`).value / 100 }; sync(true); };
@@ -1264,7 +1288,6 @@ $("thex").onkeydown = (e) => { if (e.key === "Enter" || e.key === "Escape") $("p
 
 $("lookBtn").onclick = (e) => { e.stopPropagation(); $("lookPanel").classList.toggle("open"); };
 $("lookPanel").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => $("lookPanel").classList.remove("open"));
 for (const [id, key] of [["toutline", "outline"], ["tshadow", "shadow"], ["tglow", "glow"], ["tboxop", "boxOpacity"]]) {
   $(id).oninput = () => { const c = selText(); if (!c) return; sliderStart(); c[key] = $(id).value / 100;
     if (key === "boxOpacity") c.bg = true; $("tbg").checked = c.bg; drawCaptions(); };
@@ -1374,7 +1397,6 @@ $("voiceSel").onchange = () => { const cs = P.clips.filter(c => selected.has(c.i
   applyGains(); };
 $("silenceBtn").onclick = (e) => { e.stopPropagation(); $("silencePanel").classList.toggle("open"); };
 $("silencePanel").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => $("silencePanel").classList.remove("open"));
 const silenceOpts = () => ({ noise: +$("sLevel").value, least: $("sLeast").value / 10, keep: $("sKeep").value / 100 });
 for (const id of ["sLevel", "sLeast", "sKeep"]) $(id).oninput = () => { const o = silenceOpts();
   $("sLevelVal").textContent = `${o.noise} dB`; $("sLeastVal").textContent = `${o.least.toFixed(1)} s`; $("sKeepVal").textContent = `${o.keep.toFixed(2)} s`; };
@@ -1508,7 +1530,6 @@ function showColour(c) {
 $("colourBtn").onclick = async (e) => { e.stopPropagation(); if (!$("colourPanel").classList.toggle("open")) return;
   await refreshLuts(); const c = selVideos()[0]; if (c) showColour(c); };
 $("colourPanel").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => $("colourPanel").classList.remove("open"));
 for (const [id, k, scale] of [["cB", "b", 100], ["cC", "c", 100], ["cS", "s", 100], ["cT", "t", 100]]) {
   $(id).oninput = () => { const cs = selVideos(); if (!cs.length) return; sliderStart();
     for (const c of cs) c.color = { ...NO_COLOR, ...c.color, [k]: $(id).value / scale }; sync(true); };
@@ -1567,7 +1588,6 @@ function showMotion(c) {
 const selVid = () => { const c = selected.size === 1 ? P.clips.find(c => selected.has(c.id)) : null; return c && !isText(c) && !isAudio(c) ? c : null; };
 $("motionBtn").onclick = (e) => { e.stopPropagation(); $("motionPanel").classList.toggle("open"); };
 $("motionPanel").onclick = (e) => e.stopPropagation();
-document.addEventListener("click", () => $("motionPanel").classList.remove("open"));
 for (const [id, field, scale] of [["mzoom", "zoom", 100], ["mfx", "fx", 100], ["mfy", "fy", 100]]) {
   $(id).oninput = () => { const c = selVid(); if (!c) return; sliderStart(); setAnimated(c, { [field]: $(id).value / scale }); showMotion(c); sync(true); draw(); };
   $(id).onchange = sliderEnd;

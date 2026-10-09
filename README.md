@@ -5,12 +5,9 @@
 
 **A fast, keyboard-friendly multi-track video editor for Linux: cut, trim and stack clips, then export a frame-exact MP4 with ffmpeg.**
 
-<!-- Screenshots: add the images to docs/screenshots/ and uncomment.
-![The editor: preview, inspector and a two-track timeline](docs/screenshots/editor.png)
-![The start screen: recent projects and your videos](docs/screenshots/start.png)
-![Picture-in-picture: a clip in the corner over the main track](docs/screenshots/pip.png)
--->
-> 📸 _Screenshots coming soon: editor · start screen · picture-in-picture._
+![The editor: a title popping in over the video, the inspector on the right, and a timeline with titles, music that ducks, a facecam and a crossfade into b-roll](docs/screenshots/editor.png)
+![Picture-in-picture: a facecam in the corner and a lower third, with the clip's picture, motion and colour settings](docs/screenshots/pip.png)
+![The start screen: recent projects and the videos in ~/Videos](docs/screenshots/start.png)
 
 Cutline is a small local app: a Python server (standard library only) drives
 ffmpeg, and the editor runs in a Chromium app window. Your videos are never

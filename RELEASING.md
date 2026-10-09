@@ -24,6 +24,22 @@ gh release create vX.Y.Z --title "Cutline X.Y.Z" --notes "See CHANGELOG.md"
 ```
 
 ## 4. AUR
+
+### First time only
+1. Make an account at https://aur.archlinux.org/register.
+2. Make a key just for the AUR and add its public half under *My Account → SSH Public Key*:
+   ```sh
+   ssh-keygen -t ed25519 -f ~/.ssh/aur -C "aur"
+   cat ~/.ssh/aur.pub
+   ```
+3. Tell ssh to use it:
+   ```sh
+   printf 'Host aur.archlinux.org\n  IdentityFile ~/.ssh/aur\n  User aur\n' >> ~/.ssh/config
+   ```
+4. `git clone ssh://aur@aur.archlinux.org/cutline.git ~/aur/cutline` (an empty repo: the name is free,
+   cloning it is how the package is created).
+
+### Every release
 ```sh
 cd packaging/arch
 updpkgsums                              # fills sha256sums from the GitHub tarball

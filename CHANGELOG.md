@@ -5,6 +5,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-09
+
+### Changed
+- The inspector is a side panel next to the preview now, in sections (Picture, Motion &
+  time, Colour, Text, Animation or Fades, Sound) instead of rows of controls under it.
+  Crop, Look, Motion, Colour and Silences open in place and stay open while you work. On a
+  narrow window the panel sits under the preview.
+- Detach audio moved to the Sound section.
+
+### Added
+- Screenshots in the README.
+- RELEASING.md: setting up the AUR package the first time.
+
 ## [0.13.0] - 2026-10-09
 
 ### Added
@@ -238,7 +251,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/antoniowav/cutline/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/antoniowav/cutline/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/antoniowav/cutline/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/antoniowav/cutline/compare/v0.10.0...v0.11.0

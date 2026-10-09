@@ -1,6 +1,6 @@
 # Maintainer: Antonio Piattelli <hello@antoniopiattelli.com>
 pkgname=cutline
-pkgver=0.13.0
+pkgver=0.14.0
 pkgrel=1
 pkgdesc='Multi-track video editor: split, trim, ripple, picture-in-picture, HDR tone mapping (ffmpeg + browser UI)'
 arch=('any')
