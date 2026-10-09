@@ -45,7 +45,7 @@ try:
 except ImportError:
     sys.exit("cutline: Python 3.11 or newer is required")
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 HERE = Path(__file__).resolve().parent
 
 
@@ -311,7 +311,7 @@ def clean_crop(crop):
 
 TRANSITIONS = {"fade": "fade", "dip": "fadeblack", "slide": "slideleft", "wipe": "wipeleft",
                "circle": "circleopen", "zoom": "zoomin"}       # Cutline's name: ffmpeg xfade's
-KEY_FIELDS = ("zoom", "fx", "fy", "x", "y")
+KEY_FIELDS = ("zoom", "fx", "fy", "x", "y", "opacity")
 
 
 def clean_keys(keys, c):
@@ -326,7 +326,8 @@ def clean_keys(keys, c):
             continue
         out.append({"t": num(k.get("t", 0), 0, 1e6), "zoom": num(k.get("zoom", 1), 1, 4),
                     "fx": num(k.get("fx", 0.5), 0, 1), "fy": num(k.get("fy", 0.5), 0, 1),
-                    "x": num(k.get("x", box.get("x", 0)), -1, 1), "y": num(k.get("y", box.get("y", 0)), -1, 1)})
+                    "x": num(k.get("x", box.get("x", 0)), -1, 1), "y": num(k.get("y", box.get("y", 0)), -1, 1),
+                    "opacity": num(k.get("opacity", c.get("opacity", 1)), 0, 1)})
     return sorted(out, key=lambda k: k["t"])
 
 
@@ -1220,12 +1221,13 @@ class App:
             raise ValueError("Can't export: the cache folder's path contains a quote")
         head = ["ffmpeg", "-v", "error", "-y", "-progress", "pipe:1", "-nostats"]
 
-        # Cut the timeline into pieces, one per run of clips that overlap in time, so each
+        # Cut the timeline into pieces, one per run of videos that overlap in time, so each
         # ffmpeg run only opens the videos it shows together. Every open 4K decoder holds about
         # a gigabyte of frames, whether or not its clip is on screen yet. A gap belongs to the
-        # piece after it, and the last piece runs to the end.
+        # piece after it, and the last piece runs to the end. Titles open nothing, so they don't
+        # join pieces: one that spans a cut is drawn in both, each showing its part.
         pieces = []                                # [first frame, end frame, clips and texts]
-        for c in sorted(pictures + texts, key=lambda c: sf[id(c)]):
+        for c in sorted(pictures, key=lambda c: sf[id(c)]):
             s, e = sf[id(c)], sf[id(c)] + nf[id(c)]
             if pieces and (s < pieces[-1][1] or (id(c) in links and s <= pieces[-1][1])):
                 pieces[-1][1] = max(pieces[-1][1], e)
@@ -1235,6 +1237,11 @@ class App:
         if not pieces:
             pieces = [[0, total_f, []]]
         pieces[-1][1] = total_f
+        for c in texts:
+            s, e = sf[id(c)], sf[id(c)] + nf[id(c)]
+            for piece_ in pieces:
+                if s < piece_[1] and e > piece_[0]:
+                    piece_[2].append(c)
 
         def box_px(c):
             """A clip's box in pixels: x, y, width, height (even sizes, as yuv420p needs)."""
@@ -1290,13 +1297,17 @@ class App:
             s = min(bw / max(cw, 1), bh / max(ch, 1))
             return max(2, int(cw * s) // 2 * 2), max(2, int(ch * s) // 2 * 2)
 
-        def video(k, c, pad_full, have=0, still=0, tail=0):
+        def video(k, c, pad_full, have=0, still=0, tail=0, clear=False):
+            """One clip's picture, n frames long. clear: padded to the whole frame with see-through
+            round it (a transition above the bottom strip needs frames the same size)."""
             _, _, bw, bh = box_px(c)
             info = self.sources[c["src"]].info
             speed = c.get("speed", 1)
             # a sticker keeps its transparent pixels on an overlay; on the bottom strip it sits on black
-            alpha = (info.get("alpha") or c["key"]) and not pad_full
-            fade_alpha = not pad_full and (c["opacity"] < 1 or c["fadeIn"] or c["fadeOut"])
+            alpha = ((info.get("alpha") or c["key"]) and not pad_full) or clear
+            fading = moves(c, "opacity")                # opacity keyframed: it changes over the clip
+            opacity = held(c, "opacity")
+            fade_alpha = not pad_full and (opacity < 1 or fading or c["fadeIn"] or c["fadeOut"])
             color = (tonemap() if info.get("hdr") else
                      "format=yuva420p" if alpha else f"format=yuv420p,{SDR_TAGS}")
             color += looks(k, c)
@@ -1309,12 +1320,9 @@ class App:
                 size = f"scale={bw}:{bh}:force_original_aspect_ratio=decrease,scale=trunc(iw/2)*2:trunc(ih/2)*2"
             # The crop: the clip's own, plus a punch-in that doesn't move (zooming in = cropping
             # evenly towards the focus point). A moving zoom is done by zoompan further down.
+            # The crop is the clip's own; a zoom (held or moving) happens after the picture is
+            # fitted or filled into its box, inside what's shown, as in the preview.
             cr, zooming = dict(c["crop"]), moves(c, "zoom", "fx", "fy")
-            if not zooming and held(c, "zoom") > 1:
-                z, fx, fy = held(c, "zoom"), held(c, "fx"), held(c, "fy")
-                w, h, k_ = 1 - cr["l"] - cr["r"], 1 - cr["t"] - cr["b"], 1 - 1 / z
-                cr = {"l": cr["l"] + w * k_ * fx, "r": cr["r"] + w * k_ * (1 - fx),
-                      "t": cr["t"] + h * k_ * fy, "b": cr["b"] + h * k_ * (1 - fy)}
             shape = ""
             if any(v > 1e-6 for v in cr.values()):
                 shape += (f"crop=trunc(iw*{1 - cr['l'] - cr['r']:.5f}/2)*2:trunc(ih*{1 - cr['t'] - cr['b']:.5f}/2)*2:"
@@ -1325,8 +1333,27 @@ class App:
                 T = f"(it-{have / FPS:.4f})"
                 size += (f",zoompan=z='{eased(c['keys'], 'zoom', T)}':x='(iw-iw/zoom)*({eased(c['keys'], 'fx', T)})'"
                          f":y='(ih-ih/zoom)*({eased(c['keys'], 'fy', T)})':d=1:s={cw}x{ch}:fps={FPS}")
+            elif held(c, "zoom") > 1.001:          # a punch-in that holds: crop towards the focus, scale back
+                z, fx, fy = held(c, "zoom"), held(c, "fx"), held(c, "fy")
+                size += (f",crop=trunc(iw/{z:.5f}/2)*2:trunc(ih/{z:.5f}/2)*2:trunc((iw-iw/{z:.5f})*{fx:.5f}):"
+                         f"trunc((ih-ih/{z:.5f})*{fy:.5f}),scale=trunc(iw*{z:.5f}/2)*2:trunc(ih*{z:.5f}/2)*2")
             retime = f"setpts=(PTS-STARTPTS)/{speed:.5f}," if abs(speed - 1) > 1e-6 else ""
-            f = f"[{k}:v:0]{retime}fps={FPS},{color},{shape}"
+            # Shrink first to what the clip needs (with room for any zoom): tone mapping, a LUT or a
+            # green screen on a 4K picture that ends up 1080p wide is mostly wasted work.
+            prescale = ""
+            if info.get("width") and not info.get("image"):
+                cw, ch = fitted(c, bw, bh, cr)
+                region = info["width"] * (1 - cr["l"] - cr["r"])
+                if c["rotate"] % 180:
+                    region = info["height"] * (1 - cr["t"] - cr["b"])
+                zmax = max([held(c, "zoom")] + [k["zoom"] for k in c.get("keys") or []])
+                need = min(1.0, cw / max(1, region) * zmax * 1.1)
+                if c.get("layout") in ("free", "full") and c.get("fit") == "fill":
+                    need = min(1.0, max(bw / max(1, info["width"]), bh / max(1, info["height"])) * zmax * 1.1
+                               / max(0.05, 1 - max(cr["l"] + cr["r"], cr["t"] + cr["b"])))
+                if need < 0.9:
+                    prescale = f"scale=trunc(iw*{need:.4f}/2)*2:trunc(ih*{need:.4f}/2)*2:flags=bicubic,"
+            f = f"[{k}:v:0]{retime}fps={FPS},{prescale}{color},{shape}"
             if full(c) and c["fit"] == "fit" and c["bars"] == "blur":
                 # the bars become a blurred copy of the picture, filling the canvas behind it;
                 # blurred small and scaled up, so it costs next to nothing at 4K
@@ -1338,6 +1365,8 @@ class App:
                 f += size
                 if pad_full and full(c):
                     f += f",pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:black"
+                elif clear:
+                    f += f",format=yuva420p,pad={W}:{H}:(ow-iw)/2:(oh-ih)/2:color=black@0"
             f += f",setsar=1,format={'yuva420p' if alpha or fade_alpha else 'yuv420p'},setpts=PTS-STARTPTS"
             if still:                              # a transition reaches before the source: hold its first frame
                 f += f",tpad=start_mode=clone:start={still}"
@@ -1348,15 +1377,22 @@ class App:
             d, at = nf[id(c)] / FPS, (have + still) / FPS
             fi, fo = min(c["fadeIn"], d / 2), min(c["fadeOut"], d / 2)
             if fade_alpha:
-                if c["opacity"] < 1:
-                    f += f",lutyuv=a='val*{c['opacity']:.3f}'"
+                if fading:                         # per pixel, per frame: slow, so only when it moves
+                    op = eased(c["keys"], "opacity", f"(T-{at:.4f})")
+                    f += f",geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':a='alpha(X,Y)*({op})'"
+                elif opacity < 1:
+                    f += f",lutyuv=a='val*{opacity:.3f}'"
                 if fi:
                     f += f",fade=t=in:st={at:.4f}:d={fi:.4f}:alpha=1"
                 if fo:
                     f += f",fade=t=out:st={at + d - fo:.4f}:d={fo:.4f}:alpha=1"
             elif pad_full:
-                if c["opacity"] < 1:
-                    o = c["opacity"]
+                if fading:                         # towards black, per frame
+                    o = eased(c["keys"], "opacity", f"(T-{at:.4f})")
+                    f += (f",geq=lum='16+(lum(X,Y)-16)*({o})':cb='128+(cb(X,Y)-128)*({o})'"
+                          f":cr='128+(cr(X,Y)-128)*({o})'")
+                elif opacity < 1:
+                    o = opacity
                     f += f",lutyuv=y='16+(val-16)*{o:.3f}':u='128+(val-128)*{o:.3f}':v='128+(val-128)*{o:.3f}'"
                 if fi:
                     f += f",fade=t=in:st={at:.4f}:d={fi:.4f}"
@@ -1376,8 +1412,24 @@ class App:
             args, graph = head + (VAAPI_DEVICE if gpu else []), []
             base = [c for c in vclips if c["track"] == vclips[0]["track"] and full(c)] if vclips else []
             in_base = {id(c) for c in base}
-            # transitions only join clips on the bottom strip; elsewhere a clip simply cuts
             ext = {id(c): handles(c) if id(c) in in_base else (0, 0, 0) for c in vclips}
+            # Above the bottom strip, full-screen clips joined by transitions make runs: put together
+            # with xfade first, then laid over what's below as one.
+            runs = []
+            for track in sorted({c["track"] for c in vclips} - ({base[0]["track"]} if base else set()), key=order.index):
+                run = []
+                for c in [*sorted((c for c in vclips if c["track"] == track and full(c)), key=lambda c: sf[id(c)]), None]:
+                    if c is not None and run and id(c) in links and links[id(c)][0] is run[-1]:
+                        run.append(c)
+                        continue
+                    if len(run) > 1:
+                        runs.append(run)
+                    run = [c] if c is not None else []
+            in_run = {id(c): run for run in runs for c in run}
+            for run in runs:
+                for i, c in enumerate(run):
+                    have, still, tail = handles(c)
+                    ext[id(c)] = (have if i else 0, still if i else 0, tail if i < len(run) - 1 else 0)
             for c in vclips:
                 if id(c) in in_base:
                     if id(c) in links and id(links[id(c)][0]) not in in_base:
@@ -1439,6 +1491,29 @@ class App:
             layer = 0
             for k, c in enumerate(vclips):
                 if c in base:
+                    continue
+                if id(c) in in_run:                    # a run with transitions: xfade it together first
+                    run = in_run[id(c)]
+                    if c is not run[0]:
+                        continue
+                    label, length = None, 0
+                    for cc in run:
+                        kk = vclips.index(cc)
+                        have, still, tail = ext[id(cc)]
+                        graph.append(video(kk, cc, False, have, still, tail, clear=True) + f",setpts=PTS-STARTPTS[r{kk}]")
+                        n_ = nf[id(cc)] + have + still + tail
+                        if label is None:
+                            label, length = f"[r{kk}]", n_
+                        else:
+                            _, dF, kind = links[id(cc)]
+                            graph.append(f"{label}[r{kk}]xfade=transition={kind}:duration={dF / FPS:.4f}:"
+                                         f"offset={(length - dF) / FPS:.4f}[rx{kk}]")
+                            label, length = f"[rx{kk}]", length + n_ - dF
+                    st = (sf[id(c)] - a) / FPS
+                    graph.append(f"{label}setpts=PTS-STARTPTS+{st:.4f}/TB[o{k}]")
+                    graph.append(f"[b{layer}][o{k}]overlay=x=0:y=0:eof_action=pass:"
+                                 f"enable='between(t,{st:.4f},{st + (length - 0.5) / FPS:.4f})'[b{layer + 1}]")
+                    layer += 1
                     continue
                 st, en = (sf[id(c)] - a) / FPS, (sf[id(c)] + nf[id(c)] - a) / FPS
                 if c.get("layout") == "free":          # centred in its box (a filled clip is the box)
@@ -1508,7 +1583,10 @@ class App:
                     sigma = max(1.0, gh * c["tsize"] * c["glow"] * 0.3)
                     graph.append(f"color=c=black@0:s={gw}x{gh}:r={FPS}:d={en - st + 2 / FPS:.4f},format=rgba,"
                                  + ",".join(drawtexts(c, files, font["file"], 0, en - st, gh, glow=True))
-                                 + f",gblur=sigma={sigma:.2f},scale={W}:{H},setpts=PTS+{st:.4f}/TB[gl{n}]")
+                                 + f",gblur=sigma={sigma:.2f},scale={W}:{H}"
+                                 + (f",setpts=PTS+{st:.4f}/TB" if st >= 0 else      # began in an earlier piece:
+                                    f",trim=start={-st:.4f},setpts=PTS-STARTPTS")    # start at its part here
+                                 + f"[gl{n}]")
                     graph.append(f"[b{layer}][gl{n}]overlay=format=auto:eof_action=pass[b{layer + 1}]")
                     layer += 1
                 graph.append(f"[b{layer}]" + ",".join(drawtexts(c, files, font["file"], st, en, H)) + f"[b{layer + 1}]")
@@ -1645,53 +1723,59 @@ class App:
     def run_export(self, job, steps, out, work):
         done, whole, told = 0.0, sum(s["weight"] for s in steps), ""
         try:
-            for step in steps:
-                if job["state"] == "cancelled":
-                    break
-                args = step["args"](told) if callable(step["args"]) else step["args"]
-                proc = subprocess.Popen(["nice", "-n", "5", *args], stdout=subprocess.PIPE,
-                                        stderr=subprocess.PIPE, text=True)
-                self.export_proc = proc
-                err = []
-
-                def read_errors(p=proc, e=err, step=step, base=done):
-                    for line in p.stderr:
-                        e.append(line)
-                        if step.get("percent") and (m := re.search(r"progress\s*=\s*(\d+)%", line)):
-                            job["progress"] = min(0.999, (base + step["weight"] * int(m.group(1)) / 100) / whole)
-                reader = threading.Thread(target=read_errors, daemon=True)
-                reader.start()
-                for line in proc.stdout:
-                    m = re.match(r"out_time_us=(\d+)", line)
-                    if m and step["length"]:
-                        part = min(1.0, int(m.group(1)) / 1e6 / step["length"])
-                        job["progress"] = min(0.999, (done + step["weight"] * part) / whole)
-                code = proc.wait()
-                reader.join(timeout=2)
-                if self.export_proc is proc:
-                    self.export_proc = None
-                if code != 0:
-                    if job["state"] != "cancelled":
-                        job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
-                    break
-                done += step["weight"]
-                told = "".join(err)                # what this run printed, for a step built from it
-                if step.get("finish"):
-                    try:
-                        step["finish"](job)
-                    except ValueError as e:
-                        job.update(state="error", error=str(e))
-                        break
-                    except Exception as e:          # noqa: BLE001 - the job must end, whatever went wrong
-                        job.update(state="error", error=f"Something went wrong: {type(e).__name__}: {e}")
-                        break
-            else:
-                if job["state"] != "cancelled":
-                    job.update(state="done", progress=1.0)
+            self.run_steps(job, steps, done, whole, told)
+        except Exception as e:                     # noqa: BLE001 - the job must end, whatever went wrong
+            job.update(state="error", error=f"Something went wrong: {type(e).__name__}: {e}")
         finally:
             shutil.rmtree(work, ignore_errors=True)
             if job["state"] != "done":
                 out.unlink(missing_ok=True)
+
+    def run_steps(self, job, steps, done, whole, told):
+        """Each step's ffmpeg run in turn, with progress; a step may read its result (finish)."""
+        for step in steps:
+            if job["state"] == "cancelled":
+                break
+            args = step["args"](told) if callable(step["args"]) else step["args"]
+            proc = subprocess.Popen(["nice", "-n", "5", *args], stdout=subprocess.PIPE,
+                                    stderr=subprocess.PIPE, text=True)
+            self.export_proc = proc
+            err = []
+
+            def read_errors(p=proc, e=err, step=step, base=done):
+                for line in p.stderr:
+                    e.append(line)
+                    if step.get("percent") and (m := re.search(r"progress\s*=\s*(\d+)%", line)):
+                        job["progress"] = min(0.999, (base + step["weight"] * int(m.group(1)) / 100) / whole)
+            reader = threading.Thread(target=read_errors, daemon=True)
+            reader.start()
+            for line in proc.stdout:
+                m = re.match(r"out_time_us=(\d+)", line)
+                if m and step["length"]:
+                    part = min(1.0, int(m.group(1)) / 1e6 / step["length"])
+                    job["progress"] = min(0.999, (done + step["weight"] * part) / whole)
+            code = proc.wait()
+            reader.join(timeout=2)
+            if self.export_proc is proc:
+                self.export_proc = None
+            if code != 0:
+                if job["state"] != "cancelled":
+                    job.update(state="error", error="".join(err).strip()[-800:] or f"ffmpeg exited {code}")
+                break
+            done += step["weight"]
+            told = "".join(err)                # what this run printed, for a step built from it
+            if step.get("finish"):
+                try:
+                    step["finish"](job)
+                except ValueError as e:
+                    job.update(state="error", error=str(e))
+                    break
+                except Exception as e:          # noqa: BLE001 - the job must end, whatever went wrong
+                    job.update(state="error", error=f"Something went wrong: {type(e).__name__}: {e}")
+                    break
+        else:
+            if job["state"] != "cancelled":
+                job.update(state="done", progress=1.0)
 
     def cancel_export(self):
         proc = self.export_proc

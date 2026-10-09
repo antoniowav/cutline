@@ -908,5 +908,69 @@ json.dump({{"transcription": [{{"offsets": {{"from": f, "to": t}}, "text": w}} f
         chapters = [(round(float(c["start_time"]), 2), c["tags"]["title"]) for c in json.loads(out)["chapters"]]
         self.assertEqual(chapters, [(0, "Intro"), (1.5, "Setup"), (2.5, "Chapter 3"), (3, "The = result; #1")])
 
+    def test_9q_keyframed_opacity(self):
+        # a white overlay fading from see-through to solid over 2 s, by keyframes
+        ffmpeg("-f", "lavfi", "-i", f"color=c=white:s=640x360:r={FPS}:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(self.videos / "white2.mp4"))
+        ffmpeg("-f", "lavfi", "-i", f"color=c=black:s=640x360:r={FPS}:d=2", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+               str(self.videos / "black2.mp4"))
+        self.json("/api/new", {"path": str(self.videos / "black2.mp4")})
+        self.json("/api/addsource", {"path": str(self.videos / "white2.mp4")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        key = lambda t, o: {"t": t, "zoom": 1, "fx": 0.5, "fy": 0.5, "x": 0, "y": 0, "opacity": o}
+        project["clips"] = [
+            {"id": 1, "src": ids["black2.mp4"], "track": 1, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3},
+            {"id": 2, "src": ids["white2.mp4"], "track": 2, "start": 0, "in": 0, "out": 2, "layout": "full", "size": 0.3,
+             "keys": [key(0, 0), key(2, 1)]}]
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+
+        def grey(t):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1", "-vf",
+                                  "crop=2:2:320:180", "-f", "rawvideo", "-pix_fmt", "gray", "-"], capture_output=True, check=True).stdout
+            return rgb[0]
+
+        start, middle, end = grey(0.05), grey(1.0), grey(1.9)
+        self.assertLess(start, 40, f"see-through at the start: {start}")
+        self.assertTrue(90 < middle < 170, f"half way at 1 s: {middle}")
+        self.assertGreater(end, 220, f"solid at the end: {end}")
+
+    def test_9r_transition_on_an_upper_track(self):
+        # V1: black all along. V2: red then blue, joined by a 1 s crossfade.
+        v = self.videos
+        for name in ("red", "blue", "black"):
+            if not (v / f"solid-{name}.mp4").exists():
+                ffmpeg("-f", "lavfi", "-i", f"color=c={name}:s=640x360:r={FPS}:d=3", "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                       str(v / f"solid-{name}.mp4"))
+        self.json("/api/new", {"path": str(v / "solid-black.mp4")})
+        for name in ("red", "blue"):
+            self.json("/api/addsource", {"path": str(v / f"solid-{name}.mp4")})
+        d = self.json("/api/project")
+        ids = {s["name"]: sid for sid, s in d["sources"].items()}
+        project = d["project"]
+        project["sources"] = [{"id": sid, "path": s["path"]} for sid, s in d["sources"].items()]
+        project["tracks"] = [{"id": i, "name": f"V{i}", "hidden": False, "muted": False} for i in (1, 2)]
+        clip = lambda i, src, track, start, out, **k: {"id": i, "src": ids[src], "track": track, "start": start, "in": 0,
+                                                       "out": out, "layout": "full", "size": 0.3, **k}
+        project["clips"] = [clip(1, "solid-black.mp4", 1, 0, 3), clip(2, "solid-black.mp4", 1, 3, 1),
+                            clip(3, "solid-red.mp4", 2, 0, 2), clip(4, "solid-blue.mp4", 2, 2, 2, trans={"type": "fade", "dur": 1})]
+        state = self.export(project)
+        self.assertEqual(state["state"], "done", state["error"])
+        info = probe(state["output"])
+        self.assertEqual(int(next(s for s in info["streams"] if s["codec_type"] == "video")["nb_read_frames"]), 4 * FPS)
+
+        def pixel(t):
+            rgb = subprocess.run(["ffmpeg", "-v", "error", "-ss", f"{t}", "-i", state["output"], "-frames:v", "1", "-vf",
+                                  "crop=2:2:320:180", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+            return tuple(rgb[:3])
+
+        near = lambda got, want, tol=70: all(abs(g - w) < tol for g, w in zip(got, want, strict=True))
+        self.assertTrue(near(pixel(1.2), (255, 0, 0)) and near(pixel(2.8), (0, 0, 255)), "red, then blue")
+        self.assertTrue(near(pixel(2.0), (128, 0, 128), 90), f"crossfading at the cut: {pixel(2.0)}")
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

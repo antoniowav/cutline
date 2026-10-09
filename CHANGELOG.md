@@ -5,6 +5,26 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-10-09
+
+### Added
+- Transitions on any track: full-screen clips joined by a transition above the bottom track
+  now crossfade (or slide, wipe…) too, over whatever is below.
+- Opacity can be keyframed (Motion ▾), like zoom and position.
+
+### Changed
+- Faster exports of HDR and other big clips: each clip is shrunk to the size it ends up at
+  (with room for its zoom) before tone mapping, a LUT or a green screen. A 4K HDR iPhone
+  clip in a 1080p export renders about 45 % faster.
+- A zoom now happens inside the fitted or filled picture, in the preview and the export
+  alike, so a moving zoom on a filled clip looks the same in both.
+- In the preview, the clip coming in during a transition shows its LUT and green screen.
+
+### Fixed
+- Long edits with many captions export in small pieces again: a caption spanning a cut no
+  longer ties the pieces on both sides together (one export opened 64 videos at once).
+- An export that hits an unexpected error now stops with a message instead of hanging.
+
 ## [0.12.0] - 2026-10-09
 
 ### Added
@@ -218,7 +238,8 @@ First public release.
 - Pages are served with a Content-Security-Policy, `nosniff` and `frame-ancestors 'none'`.
 - CI: end-to-end tests, ruff/bandit, shellcheck, gitleaks, namcap, and CodeQL once public.
 
-[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/antoniowav/cutline/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/antoniowav/cutline/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/antoniowav/cutline/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/antoniowav/cutline/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/antoniowav/cutline/compare/v0.9.0...v0.10.0

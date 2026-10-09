@@ -366,18 +366,19 @@ const NO_CROP = { l: 0, t: 0, r: 0, b: 0 };
 const isText = c => c.kind === "text";             // a title or caption, drawn over everything
 // Zoom, focus and a free clip's position: held, or keyframed and eased in and out between keys
 // (smoothstep), held before the first key and after the last: eased() in the export does the same.
-const heldValues = c => ({ zoom: c.zoom ?? 1, fx: c.fx ?? 0.5, fy: c.fy ?? 0.5, x: c.box?.x ?? 0, y: c.box?.y ?? 0 });
-const KEY_FIELDS = ["zoom", "fx", "fy", "x", "y"];
+const heldValues = c => ({ zoom: c.zoom ?? 1, fx: c.fx ?? 0.5, fy: c.fy ?? 0.5, x: c.box?.x ?? 0, y: c.box?.y ?? 0, opacity: c.opacity ?? 1 });
+const KEY_FIELDS = ["zoom", "fx", "fy", "x", "y", "opacity"];
 function valueAt(c, rel) {
   const ks = c.keys, pick = k => Object.fromEntries(KEY_FIELDS.map(f => [f, k[f]]));
   if (!ks?.length) return heldValues(c);
-  if (rel < ks[0].t) return pick(ks[0]);
+  const fill = k => ({ ...heldValues(c), ...k });        // keys made before opacity could move have none
+  if (rel < ks[0].t) return pick(fill(ks[0]));
   for (let i = 0; i < ks.length - 1; i++) {
     const a = ks[i], b = ks[i + 1];
-    if (rel < b.t) { const p = (rel - a.t) / Math.max(b.t - a.t, 1e-3), e = p * p * (3 - 2 * p);
-      return Object.fromEntries(KEY_FIELDS.map(f => [f, a[f] + (b[f] - a[f]) * e])); }
+    if (rel < b.t) { const p = (rel - a.t) / Math.max(b.t - a.t, 1e-3), e = p * p * (3 - 2 * p), A = fill(a), B = fill(b);
+      return Object.fromEntries(KEY_FIELDS.map(f => [f, A[f] + (B[f] - A[f]) * e])); }
   }
-  return pick(ks[ks.length - 1]);
+  return pick(fill(ks[ks.length - 1]));
 }
 const anyLength = c => isText(c) || !!S[c.src]?.loop;  // titles, photos and GIFs can be stretched as long as you like
 // How far a clip has faded in or out at time x: 0..1, as the export ramps it.
@@ -541,11 +542,7 @@ function place(v, c) {
   const rot = c.rotate || 0, fill = (c.layout === "free" || !c.layout || c.layout === "full") && c.fit === "fill";
   let { l, t: tp, r, b: bt } = c.crop || NO_CROP;
   const m = valueAt(c, t - c.start);
-  if (m.zoom > 1) {                    // a punch-in: crop evenly towards the focus point
-    const w = 1 - l - r, h = 1 - tp - bt, k = 1 - 1 / m.zoom;
-    l += w * k * m.fx; r += w * k * (1 - m.fx); tp += h * k * m.fy; bt += h * k * (1 - m.fy);
-  }
-  const key = `${bw}x${bh}:${b.x},${b.y},${b.w},${b.h}:${fill}:${l},${tp},${r},${bt}:${rot}:${src?.width}`;
+  const key = `${m.zoom},${m.fx},${m.fy}:${bw}x${bh}:${b.x},${b.y},${b.w},${b.h}:${fill}:${l},${tp},${r},${bt}:${rot}:${src?.width}`;
   if (v._place === key) return;                     // style writes are costly; only when something changed
   v._place = key;
   const sw = src?.width || P.canvas.w, sh = src?.height || P.canvas.h, turned = rot % 180 !== 0;
@@ -555,6 +552,11 @@ function place(v, c) {
     const want = BW / BH, wide = (turned ? ch / cw : cw / ch) > want;
     if (wide !== turned) { const n = wide ? ch * want : ch / want, cut = (cw - n) / sw / 2; l += cut; r += cut; cw = n; }
     else { const n = wide ? cw * want : cw / want, cut = (ch - n) / sh / 2; tp += cut; bt += cut; ch = n; }
+  }
+  if (m.zoom > 1) {                    // a punch-in, inside what's shown: crop evenly towards the focus
+    const w = 1 - l - r, h = 1 - tp - bt, k = 1 - 1 / m.zoom;
+    l += w * k * m.fx; r += w * k * (1 - m.fx); tp += h * k * m.fy; bt += h * k * (1 - m.fy);
+    cw /= m.zoom; ch /= m.zoom;
   }
   const s = Math.min(BW / (turned ? ch : cw), BH / (turned ? cw : ch));
   const ox = (l * sw + cw / 2) * s, oy = (tp * sh + ch / 2) * s;     // the crop's centre, inside the element
@@ -710,7 +712,7 @@ function showOn(v, c, force, muted) {
   v.loop = !!loop; v.muted = muted;
   v.style.display = isAudio(c) ? "none" : "block"; place(v, c);
   // opacity and fades, as the export does them
-  Object.assign(v.style, { opacity: isAudio(c) ? 1 : (c.opacity ?? 1) * fadeAt(c, t), translate: "", scale: "",
+  Object.assign(v.style, { opacity: isAudio(c) ? 1 : valueAt(c, t - c.start).opacity * fadeAt(c, t), translate: "", scale: "",
                            maskImage: "", webkitMaskImage: "", filter: isAudio(c) ? "" : colorFilter(c) });
   if (playing) {
     if (v.paused) { v.currentTime = want; v.play().catch(() => {}); }
@@ -751,16 +753,17 @@ function sync(force) {
   P.tracks.forEach((tr, i) => {
     const v = vids[tr.id], o = others[tr.id], c = tr.hidden ? null : clipAt(tr.id, t);
     const hide = el => { if (!el.paused) el.pause(); el.style.display = "none"; };
-    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { hide(v); hide(o); showGL(tr.id, v, null); return; }
+    if (!c || !S[c.src] || (S[c.src].image && !S[c.src].proxyReady)) { hide(v); hide(o); showGL(tr.id, v, null); showGL(`${tr.id}o`, o, null); return; }
     showOn(v, c, force, actx ? false : tr.muted);
     v.style.zIndex = 3 * i + 2;
     showGL(tr.id, v, c);
     const tx = transitionAt(c), other = tx && (tx.a === c ? tx.b : tx.a);
-    if (!other || !S[other.src]) { hide(o); return; }
+    if (!other || !S[other.src]) { hide(o); showGL(`${tr.id}o`, o, null); return; }
     showOn(o, other, force, true);
     o.style.zIndex = 3 * i + 2;
     transitionLook(tx.b.trans.type, Math.max(0, Math.min(1, tx.p)), tx.a, tx.b,
                    tx.a === c ? v : o, tx.b === c ? v : o);
+    showGL(tr.id, v, c); showGL(`${tr.id}o`, o, other);       // after the look: the canvases copy it
   });
   showFrame();                         // the frame follows the clip as the playhead moves on or off it
   drawCaptions();
@@ -1556,7 +1559,7 @@ const keyAt = c => c.keys?.find(k => Math.abs(k.t - (t - c.start)) < frame() * 0
 function showMotion(c) {
   const v = valueAt(c, t - c.start);
   $("mzoom").value = Math.round(v.zoom * 100); $("mzoomVal").textContent = `${Math.round(v.zoom * 100)}%`;
-  $("mfx").value = Math.round(v.fx * 100); $("mfy").value = Math.round(v.fy * 100); $("mop").value = Math.round((c.opacity ?? 1) * 100);
+  $("mfx").value = Math.round(v.fx * 100); $("mfy").value = Math.round(v.fy * 100); $("mop").value = Math.round(v.opacity * 100);
   const n = c.keys?.length || 0;
   $("unkeyBtn").disabled = !keyAt(c);
   $("keyInfo").textContent = n ? `${n} keyframe${n > 1 ? "s" : ""}${keyAt(c) ? " · on one now" : ""} · changes here make a key` : "No keyframes: changes hold for the whole clip";
@@ -1569,7 +1572,7 @@ for (const [id, field, scale] of [["mzoom", "zoom", 100], ["mfx", "fx", 100], ["
   $(id).oninput = () => { const c = selVid(); if (!c) return; sliderStart(); setAnimated(c, { [field]: $(id).value / scale }); showMotion(c); sync(true); draw(); };
   $(id).onchange = sliderEnd;
 }
-$("mop").oninput = () => { const c = selVid(); if (!c) return; sliderStart(); c.opacity = $("mop").value / 100; sync(true); };
+$("mop").oninput = () => { const c = selVid(); if (!c) return; sliderStart(); setAnimated(c, { opacity: $("mop").value / 100 }); showMotion(c); sync(true); };
 $("mop").onchange = sliderEnd;
 $("keyBtn").onclick = () => { const c = selVid(); if (!c) return;
   change(() => { const rel = Math.min(Math.max(0, t - c.start), len(c)), v = valueAt(c, rel);
@@ -1590,7 +1593,7 @@ $("followBtn").onclick = async () => { const c = selVid(); if (!c) return;
   toast(`${zooms} zoom${zooms === 1 ? "" : "s"} in where the action is: the diamonds on the clip are the keyframes, change any of them`, 5000);
 };
 $("nokeysBtn").onclick = () => { const c = selVid(); if (!c?.keys) return;
-  change(() => { const v = valueAt(c, t - c.start); delete c.keys; Object.assign(c, { zoom: v.zoom, fx: v.fx, fy: v.fy });
+  change(() => { const v = valueAt(c, t - c.start); delete c.keys; Object.assign(c, { zoom: v.zoom, fx: v.fx, fy: v.fy, opacity: v.opacity });
     if (c.box) c.box = { ...c.box, x: v.x, y: v.y }; }); };
 // Z: punch in to 120 % on the clip under the playhead (or the selected one), or back out.
 function punchIn() {
