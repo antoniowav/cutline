@@ -15,7 +15,7 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             'whisper-cpp: auto captions'
             'ggml-vulkan: faster auto captions on the GPU')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('184a91d638545c87c7f03a3085da1e5e2a807f43ca3a8df6b1a556a2a38c1efa')
+sha256sums=('ca448aebd612762b9293992526a7f81363a190545cc16e09e3b9f13d073362b3')
 
 check() {
   cd "$pkgname-$pkgver"
