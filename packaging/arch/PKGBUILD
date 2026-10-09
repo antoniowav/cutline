@@ -17,7 +17,7 @@ optdepends=('chromium: editor window (or any Chromium-based browser; see CUTLINE
             "python-opencv: Auto Shorts follow the speaker's face"
             'claude-code: Auto Shorts pick the moments with Claude')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-sha256sums=('6632b78d47f8b1b1cb05c7358cae6f43f5ba4bf842553db0f592482d9c4d5d51')
+sha256sums=('184a91d638545c87c7f03a3085da1e5e2a807f43ca3a8df6b1a556a2a38c1efa')
 
 check() {
   cd "$pkgname-$pkgver"
