@@ -304,9 +304,15 @@ def clean_box(box):
 
 
 def clean_crop(crop):
-    """How much is cut off each edge of a clip's picture, as shares of it (0 to 45 % each)."""
+    """How much is cut off each edge of a clip's picture, as shares of it. At least 5 % of the
+    picture stays each way, so a wide shot can be cropped to a tall strip anywhere across it."""
     crop = crop if isinstance(crop, dict) else {}
-    return {side: num(crop.get(side, 0), 0, 0.45) for side in "ltrb"}
+    out = {side: num(crop.get(side, 0), 0, 0.9) for side in "ltrb"}
+    for a, b in (("l", "r"), ("t", "b")):
+        if out[a] + out[b] > 0.95:
+            k = 0.95 / (out[a] + out[b])
+            out[a], out[b] = out[a] * k, out[b] * k
+    return out
 
 
 TRANSITIONS = {"fade": "fade", "dip": "fadeblack", "slide": "slideleft", "wipe": "wipeleft",
